@@ -86,14 +86,23 @@ async def generate_video(request: VideoRequest):
             video = video.set_audio(audio_clip)
             
             if request.title_text:
-                text_clip = TextClip(
-                    request.title_text,
-                    fontsize=40,
-                    color='white',
-                    font='Arial',
-                    stroke_color='black',
-                    stroke_width=2
-                )
+                try:
+                    text_clip = TextClip(
+                        request.title_text,
+                        fontsize=40,
+                        color='white',
+                        font='DejaVu-Sans',
+                        stroke_color='black',
+                        stroke_width=2
+                    )
+                except Exception:
+                    text_clip = TextClip(
+                        request.title_text,
+                        fontsize=40,
+                        color='white',
+                        stroke_color='black',
+                        stroke_width=2
+                    )
                 
                 text_position = ('center', video.h - 100)
                 text_clip = text_clip.set_position(text_position).set_duration(video.duration)

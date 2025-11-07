@@ -60,13 +60,22 @@ Generates a video from images and audio.
 - **Codec**: libx264 (video), AAC (audio)
 - **FPS**: 24 frames per second
 - **Server**: Uvicorn ASGI server running on port 5000
+- **Text Overlay**: Uses DejaVu Sans font with graceful fallback to system default
 
 ## Dependencies
+
+### Python Packages
 - FastAPI: Web framework
 - MoviePy: Video editing library
 - Requests: HTTP library for downloading files
 - Pillow: Image processing
 - Uvicorn: ASGI server
 
+### System Dependencies
+- FFmpeg: Video encoding and processing (installed via Replit)
+- ImageMagick: Image manipulation for MoviePy (installed via Replit)
+- DejaVu Sans font: Used for text overlays (available by default)
+
 ## Recent Changes
 - 2025-11-07: Initial project setup with FastAPI and MoviePy integration
+- 2025-11-07: Fixed text overlay to use DejaVu Sans font instead of Arial for compatibility
