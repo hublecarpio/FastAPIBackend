@@ -17,6 +17,10 @@ TEMP_DIR = Path("temp")
 OUTPUT_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
 
+DOWNLOAD_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 class VideoRequest(BaseModel):
     image_urls: List[HttpUrl]
     audio_url: HttpUrl
@@ -35,7 +39,7 @@ async def generate_video(request: VideoRequest):
         image_paths = []
         for idx, image_url in enumerate(request.image_urls):
             try:
-                response = requests.get(str(image_url), timeout=30)
+                response = requests.get(str(image_url), headers=DOWNLOAD_HEADERS, timeout=30)
                 response.raise_for_status()
                 
                 ext = os.path.splitext(str(image_url).split('?')[0])[1] or '.jpg'
@@ -56,7 +60,7 @@ async def generate_video(request: VideoRequest):
             raise HTTPException(status_code=400, detail="No images were successfully downloaded")
         
         try:
-            response = requests.get(str(request.audio_url), timeout=30)
+            response = requests.get(str(request.audio_url), headers=DOWNLOAD_HEADERS, timeout=30)
             response.raise_for_status()
             
             audio_ext = os.path.splitext(str(request.audio_url).split('?')[0])[1] or '.mp3'
