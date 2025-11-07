@@ -21,8 +21,13 @@ DOWNLOAD_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
+class ImageWithDuration(BaseModel):
+    url: HttpUrl
+    duration: float
+
 class VideoRequest(BaseModel):
-    image_urls: List[HttpUrl]
+    image_urls: Optional[List[HttpUrl]] = None
+    images: Optional[List[ImageWithDuration]] = None
     audio_url: HttpUrl
     title_text: Optional[str] = None
 
@@ -32,31 +37,64 @@ async def root():
 
 @app.post("/generate_video/")
 async def generate_video(request: VideoRequest):
+    if not request.image_urls and not request.images:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'image_urls' or 'images' must be provided"
+        )
+    
+    if request.image_urls and request.images:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either 'image_urls' OR 'images', not both"
+        )
+    
     temp_session_dir = TEMP_DIR / str(uuid.uuid4())
     temp_session_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        image_paths = []
-        for idx, image_url in enumerate(request.image_urls):
-            try:
-                response = requests.get(str(image_url), headers=DOWNLOAD_HEADERS, timeout=30)
-                response.raise_for_status()
-                
-                ext = os.path.splitext(str(image_url).split('?')[0])[1] or '.jpg'
-                image_path = temp_session_dir / f"image_{idx}{ext}"
-                
-                with open(image_path, 'wb') as f:
-                    f.write(response.content)
-                
-                image_paths.append(image_path)
-                
-            except Exception as e:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Failed to download image {idx} from {image_url}: {str(e)}"
-                )
+        image_data = []
         
-        if not image_paths:
+        if request.images:
+            for idx, img in enumerate(request.images):
+                try:
+                    response = requests.get(str(img.url), headers=DOWNLOAD_HEADERS, timeout=30)
+                    response.raise_for_status()
+                    
+                    ext = os.path.splitext(str(img.url).split('?')[0])[1] or '.jpg'
+                    image_path = temp_session_dir / f"image_{idx}{ext}"
+                    
+                    with open(image_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    image_data.append({"path": image_path, "duration": img.duration})
+                    
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Failed to download image {idx} from {img.url}: {str(e)}"
+                    )
+        else:
+            for idx, image_url in enumerate(request.image_urls):
+                try:
+                    response = requests.get(str(image_url), headers=DOWNLOAD_HEADERS, timeout=30)
+                    response.raise_for_status()
+                    
+                    ext = os.path.splitext(str(image_url).split('?')[0])[1] or '.jpg'
+                    image_path = temp_session_dir / f"image_{idx}{ext}"
+                    
+                    with open(image_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    image_data.append({"path": image_path, "duration": None})
+                    
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Failed to download image {idx} from {image_url}: {str(e)}"
+                    )
+        
+        if not image_data:
             raise HTTPException(status_code=400, detail="No images were successfully downloaded")
         
         try:
@@ -79,12 +117,19 @@ async def generate_video(request: VideoRequest):
             audio_clip = AudioFileClip(str(audio_path))
             audio_duration = audio_clip.duration
             
-            duration_per_image = audio_duration / len(image_paths)
+            use_custom_durations = all(img["duration"] is not None for img in image_data)
             
-            video_clips = []
-            for image_path in image_paths:
-                img_clip = ImageClip(str(image_path), duration=duration_per_image)
-                video_clips.append(img_clip)
+            if use_custom_durations:
+                video_clips = []
+                for img in image_data:
+                    img_clip = ImageClip(str(img["path"]), duration=img["duration"])
+                    video_clips.append(img_clip)
+            else:
+                duration_per_image = audio_duration / len(image_data)
+                video_clips = []
+                for img in image_data:
+                    img_clip = ImageClip(str(img["path"]), duration=duration_per_image)
+                    video_clips.append(img_clip)
             
             video = concatenate_videoclips(video_clips, method="compose")
             video = video.set_audio(audio_clip)
