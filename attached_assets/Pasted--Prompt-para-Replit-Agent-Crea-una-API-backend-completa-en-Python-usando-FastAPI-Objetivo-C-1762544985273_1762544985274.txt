@@ -1,0 +1,64 @@
+💬 Prompt para Replit Agent
+Crea una API backend completa en Python usando FastAPI.
+
+### Objetivo:
+Construir un servicio REST que reciba un JSON con:
+- Una lista de URLs de imágenes (`image_urls`).
+- Una URL de audio (`audio_url`).
+- Un texto opcional (`title_text`).
+
+El endpoint `/generate_video/` debe descargar las imágenes y el audio, generar un video MP4 combinando ambos (usando MoviePy), agregar el texto si se envía, y devolver un JSON con la ruta del video generado.
+
+### Requisitos técnicos:
+1. Usa `FastAPI` como framework.
+2. Usa `MoviePy` para generar el video.
+3. Usa `requests` para descargar archivos.
+4. Crea estructura modular con:
+
+
+/app
+└── main.py
+requirements.txt
+Dockerfile
+docker-compose.yml
+
+5. Dockeriza el servicio:
+- Base: `python:3.11-alpine`
+- Instala `ffmpeg` y dependencias.
+- Expón el puerto 80.
+- Usa `uvicorn` para correr el servidor.
+
+6. Crea un volumen local llamado `output/` para guardar los videos generados.
+
+7. Implementa manejo de errores (HTTPException) y limpieza de archivos temporales.
+
+8. Agrega un endpoint raíz `/` que devuelva un JSON de estado con versión de la API.
+
+### Extras opcionales:
+- Si se incluye texto en el JSON (`title_text`), muéstralo como subtítulo centrado en la parte inferior.
+- El video debe usar códec `libx264` y audio `aac`, con fps 24.
+
+### Resultado esperado:
+- Al ejecutar `docker compose up --build`, la API debe levantarse en `http://localhost:8000/`.
+- El endpoint `/` devuelve `{"status": "ok", "api_version": "1.0"}`.
+- El endpoint `/generate_video/` devuelve un JSON con `"message"`, `"video_filename"` y `"local_path"`.
+
+Crea todos los archivos necesarios, incluyendo el código Python completo, los Dockerfiles y el docker-compose funcional.
+Agrega comentarios claros en el código.
+Ejecuta el proyecto para verificar que la API se inicie correctamente.
+
+
+💡 Tips para usarlo bien en Replit:
+
+Crea un nuevo Repl → selecciona “AI Agent”.
+
+Pega el prompt completo en el chat del agente.
+
+Espera que te cree los archivos.
+
+Si el agente no ejecuta el contenedor automáticamente, escríbele:
+
+build and run the Docker container
+
+
+Luego puedes probar la API desde el panel derecho o con cURL.
