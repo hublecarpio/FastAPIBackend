@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, field_validator
 from typing import List, Optional
 import requests
 import os
@@ -24,6 +24,15 @@ DOWNLOAD_HEADERS = {
 class ImageWithDuration(BaseModel):
     url: HttpUrl
     duration: float
+    
+    @field_validator('duration')
+    @classmethod
+    def validate_duration(cls, v):
+        if v <= 0:
+            raise ValueError('duration must be greater than 0')
+        if not float('-inf') < v < float('inf'):
+            raise ValueError('duration must be a finite number')
+        return v
 
 class VideoRequest(BaseModel):
     image_urls: Optional[List[HttpUrl]] = None
