@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl, field_validator
 from typing import List, Optional
 import requests
@@ -16,6 +17,8 @@ TEMP_DIR = Path("temp")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
+
+app.mount("/videos", StaticFiles(directory="output"), name="videos")
 
 DOWNLOAD_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -45,7 +48,7 @@ async def root():
     return {"status": "ok", "api_version": "1.0"}
 
 @app.post("/generate_video/")
-async def generate_video(request: VideoRequest):
+async def generate_video(request: VideoRequest, req: Request):
     if not request.image_urls and not request.images:
         raise HTTPException(
             status_code=400,
@@ -188,9 +191,13 @@ async def generate_video(request: VideoRequest):
                 detail=f"Failed to generate video: {str(e)}"
             )
         
+        base_url = str(req.base_url).rstrip('/')
+        download_url = f"{base_url}/videos/{video_filename}"
+        
         return JSONResponse(content={
             "message": "Video generated successfully",
             "video_filename": video_filename,
+            "download_url": download_url,
             "local_path": str(video_path.absolute())
         })
         
