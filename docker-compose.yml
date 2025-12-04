@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  video-api:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped
