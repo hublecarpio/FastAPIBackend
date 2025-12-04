@@ -1,24 +1,40 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, HttpUrl, field_validator
 from typing import List, Optional
 import requests
 import os
 import uuid
 import shutil
+import secrets
 from pathlib import Path
 from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 
 app = FastAPI(title="Video Generator API", version="1.0")
+
+security = HTTPBasic()
+
+VALID_USERNAME = os.environ.get("API_USERNAME", "")
+VALID_PASSWORD = os.environ.get("API_PASSWORD", "")
+
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, VALID_USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, VALID_PASSWORD)
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 OUTPUT_DIR = Path("output")
 TEMP_DIR = Path("temp")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
-
-app.mount("/videos", StaticFiles(directory="output"), name="videos")
 
 DOWNLOAD_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -47,8 +63,15 @@ class VideoRequest(BaseModel):
 async def root():
     return {"status": "ok", "api_version": "1.0"}
 
+@app.get("/videos/{filename}")
+async def get_video(filename: str, username: str = Depends(verify_credentials)):
+    video_path = OUTPUT_DIR / filename
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(video_path, media_type="video/mp4", filename=filename)
+
 @app.post("/generate_video/")
-async def generate_video(request: VideoRequest, req: Request):
+async def generate_video(request: VideoRequest, req: Request, username: str = Depends(verify_credentials)):
     if not request.image_urls and not request.images:
         raise HTTPException(
             status_code=400,
