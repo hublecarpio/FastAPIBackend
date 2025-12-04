@@ -4,10 +4,12 @@
 FastAPI-based REST API service that generates MP4 videos by combining images and audio. The service downloads images and audio from provided URLs, creates a video using MoviePy, and optionally adds text overlays.
 
 ## Features
-- **POST /generate_video/**: Main endpoint with two modes:
+- **POST /generate_video/**: Main endpoint with two modes (requires Basic Auth):
   - **Auto Duration**: Images divided equally based on audio length
   - **Custom Duration**: Specify duration in seconds for each image individually
-- **GET /**: Health check endpoint returning API status and version
+- **GET /videos/{filename}**: Download generated videos (requires Basic Auth)
+- **GET /**: Health check endpoint returning API status and version (public)
+- **Basic Authentication**: Protected endpoints require HTTP Basic Auth
 - Automatic video generation with libx264 codec and AAC audio at 24 fps
 - Optional centered text overlay at the bottom of videos
 - User-Agent headers for compatibility with services like catbox.moe
@@ -66,6 +68,7 @@ Generates a video from images and audio.
 {
   "message": "Video generated successfully",
   "video_filename": "video_<uuid>.mp4",
+  "download_url": "https://your-domain/videos/video_<uuid>.mp4",
   "local_path": "/path/to/output/video_<uuid>.mp4"
 }
 ```
@@ -97,3 +100,5 @@ Generates a video from images and audio.
 - 2025-11-07: Fixed text overlay to use DejaVu Sans font instead of Arial for compatibility
 - 2025-11-07: Added User-Agent headers to fix downloads from catbox.moe and similar services
 - 2025-11-07: Added custom duration feature - users can now specify duration for each image individually
+- 2025-12-04: Added Basic Authentication to POST /generate_video/ and GET /videos/{filename}
+- 2025-12-04: Added download_url to response for easy video access
