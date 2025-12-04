@@ -8,3 +8,9 @@ services:
     volumes:
       - ./output:/app/output
     restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 4
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
