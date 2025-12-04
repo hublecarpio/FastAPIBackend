@@ -1,34 +1,15 @@
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, HttpUrl, field_validator
 from typing import List, Optional
 import requests
 import os
 import uuid
 import shutil
-import secrets
 from pathlib import Path
 from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 
 app = FastAPI(title="Video Generator API", version="1.0")
-
-security = HTTPBasic()
-
-VALID_USERNAME = os.environ.get("API_USERNAME", "")
-VALID_PASSWORD = os.environ.get("API_PASSWORD", "")
-
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_username = secrets.compare_digest(credentials.username, VALID_USERNAME)
-    correct_password = secrets.compare_digest(credentials.password, VALID_PASSWORD)
-    
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
 
 OUTPUT_DIR = Path("output")
 TEMP_DIR = Path("temp")
@@ -64,14 +45,14 @@ async def root():
     return {"status": "ok", "api_version": "1.0"}
 
 @app.get("/videos/{filename}")
-async def get_video(filename: str, username: str = Depends(verify_credentials)):
+async def get_video(filename: str):
     video_path = OUTPUT_DIR / filename
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
     return FileResponse(video_path, media_type="video/mp4", filename=filename)
 
 @app.post("/generate_video/")
-async def generate_video(request: VideoRequest, req: Request, username: str = Depends(verify_credentials)):
+async def generate_video(request: VideoRequest, req: Request):
     if not request.image_urls and not request.images:
         raise HTTPException(
             status_code=400,
