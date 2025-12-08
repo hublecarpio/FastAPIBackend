@@ -3,12 +3,10 @@ version: '3.8'
 services:
   video-api:
     image: iamhuble/video-generator-api:latest
-    ports:
-      - "5000:5000"
     volumes:
       - video_output:/app/output
     networks:
-      - video-net
+      - traefik-public
     deploy:
       mode: replicated
       replicas: 2
@@ -29,6 +27,13 @@ services:
         delay: 10s
         failure_action: rollback
         order: start-first
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.video-api.rule=Host(`apivideo.efficore.es`)"
+        - "traefik.http.routers.video-api.entrypoints=websecure"
+        - "traefik.http.routers.video-api.tls.certresolver=le"
+        - "traefik.http.services.video-api.loadbalancer.server.port=5000"
+        - "traefik.docker.network=traefik-public"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/"]
       interval: 30s
@@ -41,6 +46,5 @@ volumes:
     driver: local
 
 networks:
-  video-net:
-    driver: overlay
-    attachable: true
+  traefik-public:
+    external: true
