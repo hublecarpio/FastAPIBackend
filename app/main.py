@@ -7,6 +7,8 @@ import os
 import uuid
 import shutil
 from pathlib import Path
+from PIL import Image
+import io
 from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 
 app = FastAPI(title="Video Generator API", version="1.0")
@@ -39,6 +41,42 @@ class VideoRequest(BaseModel):
     images: Optional[List[ImageWithDuration]] = None
     audio_url: HttpUrl
     title_text: Optional[str] = None
+
+def download_and_validate_image(url: str, save_path: Path, idx: int) -> Path:
+    """Download image, validate it's a real image, and save as PNG."""
+    try:
+        response = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=30)
+        response.raise_for_status()
+        
+        content_length = len(response.content)
+        if content_length < 100:
+            raise ValueError(f"Downloaded file too small ({content_length} bytes), likely not a valid image")
+        
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            raise ValueError(f"URL returned HTML instead of an image (content-type: {content_type})")
+        
+        try:
+            img = Image.open(io.BytesIO(response.content))
+            img.verify()
+            img = Image.open(io.BytesIO(response.content))
+            
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            png_path = save_path.with_suffix('.png')
+            img.save(png_path, 'PNG')
+            img.close()
+            
+            return png_path
+            
+        except Exception as e:
+            raise ValueError(f"Failed to process as image: {str(e)}")
+            
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"Download failed: {str(e)}")
 
 @app.get("/")
 async def root():
@@ -74,40 +112,24 @@ async def generate_video(request: VideoRequest, req: Request):
         if request.images:
             for idx, img in enumerate(request.images):
                 try:
-                    response = requests.get(str(img.url), headers=DOWNLOAD_HEADERS, timeout=30)
-                    response.raise_for_status()
-                    
-                    ext = os.path.splitext(str(img.url).split('?')[0])[1] or '.jpg'
-                    image_path = temp_session_dir / f"image_{idx}{ext}"
-                    
-                    with open(image_path, 'wb') as f:
-                        f.write(response.content)
-                    
-                    image_data.append({"path": image_path, "duration": img.duration})
-                    
-                except Exception as e:
+                    image_path = temp_session_dir / f"image_{idx}"
+                    validated_path = download_and_validate_image(str(img.url), image_path, idx)
+                    image_data.append({"path": validated_path, "duration": img.duration})
+                except ValueError as e:
                     raise HTTPException(
                         status_code=400, 
-                        detail=f"Failed to download image {idx} from {img.url}: {str(e)}"
+                        detail=f"Image {idx} from {img.url}: {str(e)}"
                     )
         else:
             for idx, image_url in enumerate(request.image_urls):
                 try:
-                    response = requests.get(str(image_url), headers=DOWNLOAD_HEADERS, timeout=30)
-                    response.raise_for_status()
-                    
-                    ext = os.path.splitext(str(image_url).split('?')[0])[1] or '.jpg'
-                    image_path = temp_session_dir / f"image_{idx}{ext}"
-                    
-                    with open(image_path, 'wb') as f:
-                        f.write(response.content)
-                    
-                    image_data.append({"path": image_path, "duration": None})
-                    
-                except Exception as e:
+                    image_path = temp_session_dir / f"image_{idx}"
+                    validated_path = download_and_validate_image(str(image_url), image_path, idx)
+                    image_data.append({"path": validated_path, "duration": None})
+                except ValueError as e:
                     raise HTTPException(
                         status_code=400, 
-                        detail=f"Failed to download image {idx} from {image_url}: {str(e)}"
+                        detail=f"Image {idx} from {image_url}: {str(e)}"
                     )
         
         if not image_data:
