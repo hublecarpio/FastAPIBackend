@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  video-api:
+    image: video-generator-api:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      - video_output:/app/output
+    networks:
+      - video-net
+    deploy:
+      mode: replicated
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: start-first
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  video_output:
+    driver: local
+
+networks:
+  video-net:
+    driver: overlay
+    attachable: true

@@ -20,9 +20,49 @@ FastAPI-based REST API service that generates MP4 videos by combining images and
 /app
   └── main.py          # FastAPI application and video generation logic
 requirements.txt       # Python dependencies
+Dockerfile             # Docker image configuration
+docker-compose.yml     # Local Docker development
+docker-stack.yml       # Docker Swarm / Portainer deployment
+.dockerignore          # Docker build exclusions
 output/                # Directory for generated videos
 temp/                  # Temporary files (auto-cleaned)
 ```
+
+## Docker Deployment
+
+### Local Development (docker-compose)
+```bash
+git clone <repo>
+cd video-generator-api
+docker-compose up -d --build
+```
+API available at: `http://localhost:5000`
+
+### Docker Swarm / Portainer
+
+**Step 1: Build and push image**
+```bash
+docker build -t video-generator-api:latest .
+docker tag video-generator-api:latest your-registry/video-generator-api:latest
+docker push your-registry/video-generator-api:latest
+```
+
+**Step 2: Deploy stack via Portainer**
+1. Go to Portainer > Stacks > Add stack
+2. Upload or paste `docker-stack.yml`
+3. Update image name if using private registry
+4. Deploy
+
+**Or via CLI:**
+```bash
+docker stack deploy -c docker-stack.yml video-api
+```
+
+### Swarm Configuration
+- **Replicas**: 2 (adjustable based on server resources)
+- **Resources**: 2 CPU / 2GB RAM limit per replica
+- **Healthcheck**: GET / every 30s
+- **Restart policy**: on-failure with max 3 attempts
 
 ## API Endpoints
 
@@ -88,6 +128,8 @@ Generates a video from images and audio.
 - Requests: HTTP library for downloading files
 - Pillow: Image processing
 - Uvicorn: ASGI server
+- imageio[pyav]: Image/video I/O backend
+- numpy: Numerical processing
 
 ### System Dependencies
 - FFmpeg: Video encoding and processing (installed via Replit)
@@ -99,5 +141,7 @@ Generates a video from images and audio.
 - 2025-11-07: Fixed text overlay to use DejaVu Sans font instead of Arial for compatibility
 - 2025-11-07: Added User-Agent headers to fix downloads from catbox.moe and similar services
 - 2025-11-07: Added custom duration feature - users can now specify duration for each image individually
-- 2025-12-04: Added Basic Authentication to POST /generate_video/ and GET /videos/{filename}
 - 2025-12-04: Added download_url to response for easy video access
+- 2025-12-08: Added Docker support with Dockerfile, docker-compose.yml, docker-stack.yml
+- 2025-12-08: Fixed imageio backend error by adding imageio[pyav] dependency
+- 2025-12-08: Added Docker Swarm / Portainer compatible deployment configuration
