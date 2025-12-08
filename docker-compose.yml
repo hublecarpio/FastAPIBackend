@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: video-generator-api:latest
+    image: iamhuble/video-generator-api:latest
     ports:
       - "5000:5000"
     volumes:

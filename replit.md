@@ -42,9 +42,8 @@ API available at: `http://localhost:5000`
 
 **Step 1: Build and push image**
 ```bash
-docker build -t video-generator-api:latest .
-docker tag video-generator-api:latest your-registry/video-generator-api:latest
-docker push your-registry/video-generator-api:latest
+docker build -t iamhuble/video-generator-api:latest .
+docker push iamhuble/video-generator-api:latest
 ```
 
 **Step 2: Deploy stack via Portainer**

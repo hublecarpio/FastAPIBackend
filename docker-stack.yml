@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   video-api:
-    image: video-generator-api:latest
+    image: iamhuble/video-generator-api:latest
     ports:
       - "5000:5000"
     volumes:
