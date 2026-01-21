@@ -268,7 +268,8 @@ def download_and_validate_video(url: str, save_path: Path, idx: int) -> Path:
 
 @app.post("/concat_videos/")
 async def concat_videos(request: ConcatVideosRequest, req: Request):
-    """Concatenate multiple MP4 videos into one (without audio)."""
+    """Concatenate multiple MP4 videos into one (without audio) using FFmpeg."""
+    import subprocess
     
     if len(request.video_urls) < 2:
         raise HTTPException(
@@ -279,50 +280,71 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     temp_session_dir = TEMP_DIR / str(uuid.uuid4())
     temp_session_dir.mkdir(parents=True, exist_ok=True)
     
-    video_clips = []
+    downloaded_videos = []
     
     try:
         for idx, video_url in enumerate(request.video_urls):
             try:
                 video_path = temp_session_dir / f"video_{idx}"
                 validated_path = download_and_validate_video(str(video_url), video_path, idx)
-                
-                clip = VideoFileClip(str(validated_path))
-                clip = clip.without_audio()
-                video_clips.append(clip)
+                downloaded_videos.append(validated_path)
                 
             except ValueError as e:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Video {idx} from {video_url}: {str(e)}"
                 )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Video {idx} from {video_url}: Failed to load video - {str(e)}"
-                )
         
-        if not video_clips:
-            raise HTTPException(status_code=400, detail="No videos were successfully loaded")
+        if not downloaded_videos:
+            raise HTTPException(status_code=400, detail="No videos were successfully downloaded")
         
         try:
-            final_video = concatenate_videoclips(video_clips, method="compose")
+            concat_list_path = temp_session_dir / "concat_list.txt"
+            with open(concat_list_path, 'w') as f:
+                for video_path in downloaded_videos:
+                    f.write(f"file '{video_path.absolute()}'\n")
             
             video_filename = f"concat_{uuid.uuid4()}.mp4"
-            video_path = OUTPUT_DIR / video_filename
+            output_path = OUTPUT_DIR / video_filename
             
-            final_video.write_videofile(
-                str(video_path),
-                codec='libx264',
-                fps=24,
-                preset='medium',
-                logger=None
-            )
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', str(concat_list_path),
+                '-an',
+                '-c:v', 'copy',
+                '-movflags', '+faststart',
+                str(output_path)
+            ]
             
-            final_video.close()
-            for clip in video_clips:
-                clip.close()
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                if 'discarding' in result.stderr.lower() or 'discarding' in result.stdout.lower():
+                    cmd_reencode = [
+                        'ffmpeg', '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', str(concat_list_path),
+                        '-an',
+                        '-c:v', 'libx264',
+                        '-preset', 'fast',
+                        '-movflags', '+faststart',
+                        str(output_path)
+                    ]
+                    result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
+                    
+                    if result.returncode != 0:
+                        raise Exception(f"FFmpeg re-encode failed: {result.stderr}")
+                else:
+                    raise Exception(f"FFmpeg failed: {result.stderr}")
                 
+        except subprocess.TimeoutExpired:
+            raise HTTPException(
+                status_code=500,
+                detail="Video processing timed out (max 5 minutes)"
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=500,
@@ -336,7 +358,7 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
             "message": "Videos concatenated successfully",
             "video_filename": video_filename,
             "download_url": download_url,
-            "local_path": str(video_path.absolute()),
+            "local_path": str(output_path.absolute()),
             "total_videos": len(request.video_urls)
         })
         
@@ -346,12 +368,6 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
     
     finally:
-        for clip in video_clips:
-            try:
-                clip.close()
-            except:
-                pass
-        
         if temp_session_dir.exists():
             try:
                 shutil.rmtree(temp_session_dir)
