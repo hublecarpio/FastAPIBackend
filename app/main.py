@@ -1,14 +1,17 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, HttpUrl, field_validator
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import requests
 import os
 import uuid
 import shutil
+import subprocess
+import threading
 from pathlib import Path
 from PIL import Image
 import io
+from datetime import datetime
 from moviepy.editor import ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 
 app = FastAPI(title="Video Generator API", version="1.0")
@@ -18,6 +21,8 @@ TEMP_DIR = Path("temp")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
+
+jobs_store: Dict[str, Dict[str, Any]] = {}
 
 DOWNLOAD_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -266,37 +271,38 @@ def download_and_validate_video(url: str, save_path: Path, idx: int) -> Path:
     except requests.exceptions.RequestException as e:
         raise ValueError(f"Download failed: {str(e)}")
 
-@app.post("/concat_videos/")
-async def concat_videos(request: ConcatVideosRequest, req: Request):
-    """Concatenate multiple MP4 videos into one (without audio) using FFmpeg."""
-    import subprocess
-    
-    if len(request.video_urls) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="At least 2 video URLs are required"
-        )
-    
-    temp_session_dir = TEMP_DIR / str(uuid.uuid4())
+def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
+    """Background task to concatenate videos."""
+    temp_session_dir = TEMP_DIR / job_id
     temp_session_dir.mkdir(parents=True, exist_ok=True)
     
-    downloaded_videos = []
-    
     try:
-        for idx, video_url in enumerate(request.video_urls):
+        jobs_store[job_id]["status"] = "downloading"
+        jobs_store[job_id]["progress"] = 0
+        
+        downloaded_videos = []
+        total_videos = len(video_urls)
+        
+        for idx, video_url in enumerate(video_urls):
             try:
                 video_path = temp_session_dir / f"video_{idx}"
-                validated_path = download_and_validate_video(str(video_url), video_path, idx)
+                validated_path = download_and_validate_video(video_url, video_path, idx)
                 downloaded_videos.append(validated_path)
-                
+                jobs_store[job_id]["progress"] = int((idx + 1) / total_videos * 50)
+                jobs_store[job_id]["message"] = f"Downloaded {idx + 1}/{total_videos} videos"
             except ValueError as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Video {idx} from {video_url}: {str(e)}"
-                )
+                jobs_store[job_id]["status"] = "failed"
+                jobs_store[job_id]["error"] = f"Video {idx}: {str(e)}"
+                return
         
         if not downloaded_videos:
-            raise HTTPException(status_code=400, detail="No videos were successfully downloaded")
+            jobs_store[job_id]["status"] = "failed"
+            jobs_store[job_id]["error"] = "No videos were successfully downloaded"
+            return
+        
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 50
+        jobs_store[job_id]["message"] = "Concatenating videos..."
         
         try:
             concat_list_path = temp_session_dir / "concat_list.txt"
@@ -304,7 +310,7 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
                 for video_path in downloaded_videos:
                     f.write(f"file '{video_path.absolute()}'\n")
             
-            video_filename = f"concat_{uuid.uuid4()}.mp4"
+            video_filename = f"concat_{job_id}.mp4"
             output_path = OUTPUT_DIR / video_filename
             
             cmd = [
@@ -321,58 +327,91 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
             if result.returncode != 0:
-                if 'discarding' in result.stderr.lower() or 'discarding' in result.stdout.lower():
-                    cmd_reencode = [
-                        'ffmpeg', '-y',
-                        '-f', 'concat',
-                        '-safe', '0',
-                        '-i', str(concat_list_path),
-                        '-an',
-                        '-c:v', 'libx264',
-                        '-preset', 'fast',
-                        '-movflags', '+faststart',
-                        str(output_path)
-                    ]
-                    result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"FFmpeg re-encode failed: {result.stderr}")
-                else:
-                    raise Exception(f"FFmpeg failed: {result.stderr}")
+                cmd_reencode = [
+                    'ffmpeg', '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', str(concat_list_path),
+                    '-an',
+                    '-c:v', 'libx264',
+                    '-preset', 'fast',
+                    '-movflags', '+faststart',
+                    str(output_path)
+                ]
+                result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
                 
+                if result.returncode != 0:
+                    raise Exception(f"FFmpeg failed: {result.stderr[:500]}")
+            
+            jobs_store[job_id]["status"] = "completed"
+            jobs_store[job_id]["progress"] = 100
+            jobs_store[job_id]["message"] = "Video ready"
+            jobs_store[job_id]["video_filename"] = video_filename
+            jobs_store[job_id]["download_url"] = f"{base_url}/videos/{video_filename}"
+            jobs_store[job_id]["completed_at"] = datetime.now().isoformat()
+            
         except subprocess.TimeoutExpired:
-            raise HTTPException(
-                status_code=500,
-                detail="Video processing timed out (max 5 minutes)"
-            )
+            jobs_store[job_id]["status"] = "failed"
+            jobs_store[job_id]["error"] = "Processing timed out (max 10 minutes)"
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to concatenate videos: {str(e)}"
-            )
-        
-        base_url = str(req.base_url).rstrip('/')
-        download_url = f"{base_url}/videos/{video_filename}"
-        
-        return JSONResponse(content={
-            "message": "Videos concatenated successfully",
-            "video_filename": video_filename,
-            "download_url": download_url,
-            "local_path": str(output_path.absolute()),
-            "total_videos": len(request.video_urls)
-        })
-        
-    except HTTPException:
-        raise
+            jobs_store[job_id]["status"] = "failed"
+            jobs_store[job_id]["error"] = str(e)
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = f"Unexpected error: {str(e)}"
     
     finally:
         if temp_session_dir.exists():
             try:
                 shutil.rmtree(temp_session_dir)
-            except Exception as e:
-                print(f"Warning: Failed to clean up temporary directory {temp_session_dir}: {e}")
+            except:
+                pass
+
+@app.post("/concat_videos/")
+async def concat_videos(request: ConcatVideosRequest, req: Request):
+    """Start async video concatenation job. Returns job_id immediately."""
+    
+    if len(request.video_urls) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 video URLs are required"
+        )
+    
+    job_id = str(uuid.uuid4())
+    base_url = str(req.base_url).rstrip('/')
+    
+    jobs_store[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0,
+        "message": "Job queued",
+        "total_videos": len(request.video_urls),
+        "created_at": datetime.now().isoformat(),
+        "video_filename": None,
+        "download_url": None,
+        "error": None
+    }
+    
+    video_urls = [str(url) for url in request.video_urls]
+    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url))
+    thread.start()
+    
+    return JSONResponse(content={
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Video concatenation job started",
+        "check_status_url": f"{base_url}/jobs/{job_id}"
+    })
+
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """Get the status of a video concatenation job."""
+    
+    if job_id not in jobs_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return JSONResponse(content=jobs_store[job_id])
 
 if __name__ == "__main__":
     import uvicorn
