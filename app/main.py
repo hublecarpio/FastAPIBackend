@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from PIL import Image
 import io
-from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 
 app = FastAPI(title="Video Generator API", version="1.0")
 
@@ -41,6 +41,9 @@ class VideoRequest(BaseModel):
     images: Optional[List[ImageWithDuration]] = None
     audio_url: HttpUrl
     title_text: Optional[str] = None
+
+class ConcatVideosRequest(BaseModel):
+    video_urls: List[HttpUrl]
 
 def download_and_validate_image(url: str, save_path: Path, idx: int) -> Path:
     """Download image, validate it's a real image, and save as PNG."""
@@ -233,6 +236,122 @@ async def generate_video(request: VideoRequest, req: Request):
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
     
     finally:
+        if temp_session_dir.exists():
+            try:
+                shutil.rmtree(temp_session_dir)
+            except Exception as e:
+                print(f"Warning: Failed to clean up temporary directory {temp_session_dir}: {e}")
+
+def download_and_validate_video(url: str, save_path: Path, idx: int) -> Path:
+    """Download video and validate it's a valid MP4."""
+    try:
+        response = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=120, stream=True)
+        response.raise_for_status()
+        
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            raise ValueError(f"URL returned HTML instead of video (content-type: {content_type})")
+        
+        video_path = save_path.with_suffix('.mp4')
+        with open(video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        file_size = video_path.stat().st_size
+        if file_size < 1000:
+            raise ValueError(f"Downloaded file too small ({file_size} bytes), likely not a valid video")
+        
+        return video_path
+        
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"Download failed: {str(e)}")
+
+@app.post("/concat_videos/")
+async def concat_videos(request: ConcatVideosRequest, req: Request):
+    """Concatenate multiple MP4 videos into one (without audio)."""
+    
+    if len(request.video_urls) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 video URLs are required"
+        )
+    
+    temp_session_dir = TEMP_DIR / str(uuid.uuid4())
+    temp_session_dir.mkdir(parents=True, exist_ok=True)
+    
+    video_clips = []
+    
+    try:
+        for idx, video_url in enumerate(request.video_urls):
+            try:
+                video_path = temp_session_dir / f"video_{idx}"
+                validated_path = download_and_validate_video(str(video_url), video_path, idx)
+                
+                clip = VideoFileClip(str(validated_path))
+                clip = clip.without_audio()
+                video_clips.append(clip)
+                
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video {idx} from {video_url}: {str(e)}"
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video {idx} from {video_url}: Failed to load video - {str(e)}"
+                )
+        
+        if not video_clips:
+            raise HTTPException(status_code=400, detail="No videos were successfully loaded")
+        
+        try:
+            final_video = concatenate_videoclips(video_clips, method="compose")
+            
+            video_filename = f"concat_{uuid.uuid4()}.mp4"
+            video_path = OUTPUT_DIR / video_filename
+            
+            final_video.write_videofile(
+                str(video_path),
+                codec='libx264',
+                fps=24,
+                preset='medium',
+                logger=None
+            )
+            
+            final_video.close()
+            for clip in video_clips:
+                clip.close()
+                
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to concatenate videos: {str(e)}"
+            )
+        
+        base_url = str(req.base_url).rstrip('/')
+        download_url = f"{base_url}/videos/{video_filename}"
+        
+        return JSONResponse(content={
+            "message": "Videos concatenated successfully",
+            "video_filename": video_filename,
+            "download_url": download_url,
+            "local_path": str(video_path.absolute()),
+            "total_videos": len(request.video_urls)
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    
+    finally:
+        for clip in video_clips:
+            try:
+                clip.close()
+            except:
+                pass
+        
         if temp_session_dir.exists():
             try:
                 shutil.rmtree(temp_session_dir)
