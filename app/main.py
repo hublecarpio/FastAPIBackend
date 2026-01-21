@@ -318,8 +318,8 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', str(concat_list_path),
-                '-an',
                 '-c:v', 'copy',
+                '-c:a', 'copy',
                 '-movflags', '+faststart',
                 str(output_path)
             ]
@@ -332,8 +332,8 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
                     '-f', 'concat',
                     '-safe', '0',
                     '-i', str(concat_list_path),
-                    '-an',
                     '-c:v', 'libx264',
+                    '-c:a', 'aac',
                     '-preset', 'fast',
                     '-movflags', '+faststart',
                     str(output_path)
