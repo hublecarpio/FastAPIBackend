@@ -1,0 +1,15 @@
+The service was not able to process your request
+Error generating karaoke subtitles: Client.__init__() got an unexpected keyword argument 'proxies'
+Error details
+
+ From HTTP Request
+Error code
+
+500
+
+Full message
+
+500 - "{\"detail\":\"Error generating karaoke subtitles: Client.__init__() got an unexpected keyword argument 'proxies'\"}"
+Request
+
+{ "body": { "audio_url": "https://memoriaback.iamhuble.space/n8nback/0CDFIUXD2audioeleven.mpega", "script": "Si no tienes a alguien que entienda los datos, tus decisiones son a ciegas. Y sí, así de crudo. Hoy, el negocio que no integra inteligencia comercial, se vuelve obsoleto sin siquiera darse cuenta. El que domina la tecnología, domina el mercado. Pero, ¿qué significa esto en la práctica para ti? Mira, los negocios que ganan hoy no son los que publican más o hacen más ruido, son los que entienden y usan sus datos para decidir. Inteligencia comercial es dejar de adivinar y empezar a decidir con certeza. Paso uno: centraliza tus datos, conecta campañas, CRM y ventas en un solo panel. Paso dos: interpreta antes de actuar. O sea, no gastas más, entiendes qué movimiento sí impacta en tu margen. Paso tres: automatiza lo repetible, así tu tiempo se enfoca en lo estratégico. Esto no es sólo tecnología por moda. Es cuidar el patrimonio de tu familia y la visión de tu empresa. Mira, cuando decides con inteligencia, dejas de sobrevivir por semanas y empiezas a planificar por años. Sin inteligencia comercial, trabajas más pero sabes menos. Los datos mandan. Si quieres dar el paso hacia un negocio con cerebro digital, comenta “CEREBRO” y te mando un documento práctico para implementar inteligencia comercial. Menos intuición, más precisión.", "words_per_line": 5, "y": 900 }, "headers": { "accept": "application/json,text/html,application/xhtml+xml,application/xml,text/*;q=0.9, image/*;q=0.8, */*;q=0.7" }, "method": "POST", "uri": "http://apivideo.efficore.es/generate_karaoke_subtitles/", "gzip": true, "rejectUnauthorized": true, "followRedirect": true, "resolveWithFullResponse": true, "followAllRedirects": true, "timeout": 300000, "encoding": null, "json": false, "useStream": true }
