@@ -390,3 +390,4 @@ Uses OpenAI Whisper for word-level timestamp detection.
 - 2026-01-25: Added text overlays/subtitles support to concat_videos with timing, position, colors, background, padding, and border
 - 2026-01-25: Added POST /generate_karaoke_subtitles/ endpoint for karaoke-style word-by-word subtitles using OpenAI Whisper
 - 2026-01-25: Improved video quality with CRF 18, 8000k bitrate, and medium preset for overlays
+- 2026-01-25: Added automatic text wrapping for subtitles - text now wraps to multiple lines if exceeding video width

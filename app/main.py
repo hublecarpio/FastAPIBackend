@@ -328,8 +328,58 @@ def hex_to_rgb(hex_color: str) -> tuple:
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
+def wrap_text(text: str, font, max_width: int, draw) -> list:
+    """Wrap text to fit within max_width, returning list of lines.
+    Handles long words by breaking them character by character if needed."""
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        bbox = draw.textbbox((0, 0), word, font=font)
+        word_width = bbox[2] - bbox[0]
+        
+        if word_width > max_width:
+            if current_line:
+                lines.append(' '.join(current_line))
+                current_line = []
+            
+            chars = list(word)
+            current_word_part = ""
+            for char in chars:
+                test_part = current_word_part + char
+                bbox = draw.textbbox((0, 0), test_part, font=font)
+                part_width = bbox[2] - bbox[0]
+                
+                if part_width <= max_width:
+                    current_word_part = test_part
+                else:
+                    if current_word_part:
+                        lines.append(current_word_part)
+                    current_word_part = char
+            
+            if current_word_part:
+                current_line = [current_word_part]
+        else:
+            test_line = ' '.join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+            
+            if line_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines if lines else [text]
+
+
 def create_text_clip_with_background(overlay: dict, video_width: int, video_height: int):
-    """Create a TextClip with optional background, padding, border, and stroke."""
+    """Create a TextClip with optional background, padding, border, stroke, and auto text wrapping."""
     from PIL import Image as PILImage, ImageDraw, ImageFont
     from moviepy.editor import ImageClip as MoviePyImageClip
     
@@ -361,13 +411,27 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
     
     temp_img = PILImage.new('RGBA', (1, 1))
     temp_draw = ImageDraw.Draw(temp_img)
-    bbox = temp_draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    
+    margin = 40
+    stroke_extra = stroke_width * 2 if stroke_width else 0
+    max_text_width = video_width - (margin * 2) - (padding * 2) - (border_width * 2) - stroke_extra
+    
+    lines = wrap_text(text, font, max_text_width, temp_draw)
+    
+    line_heights = []
+    line_widths = []
+    for line in lines:
+        bbox = temp_draw.textbbox((0, 0), line, font=font)
+        line_widths.append(bbox[2] - bbox[0])
+        line_heights.append(bbox[3] - bbox[1])
+    
+    max_line_width = max(line_widths) if line_widths else 0
+    line_spacing = int(font_size * 0.3)
+    total_text_height = sum(line_heights) + (line_spacing * (len(lines) - 1)) if lines else 0
     
     stroke_extra = stroke_width * 2 if stroke_width else 0
-    total_width = text_width + (padding * 2) + (border_width * 2) + stroke_extra
-    total_height = text_height + (padding * 2) + (border_width * 2) + stroke_extra
+    total_width = max_line_width + (padding * 2) + (border_width * 2) + stroke_extra
+    total_height = total_text_height + (padding * 2) + (border_width * 2) + stroke_extra
     
     img = PILImage.new('RGBA', (total_width, total_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -389,26 +453,44 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
                 outline=(*border_rgb, 255)
             )
     
-    text_x = padding + border_width + (stroke_width if stroke_width else 0)
-    text_y = padding + border_width + (stroke_width if stroke_width else 0)
     text_rgb = hex_to_rgb(font_color)
+    current_y = padding + border_width + (stroke_width if stroke_width else 0)
     
-    if stroke_color and stroke_width > 0:
-        stroke_rgb = hex_to_rgb(stroke_color)
-        draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255), 
-                  stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
-    else:
-        draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255))
+    for i, line in enumerate(lines):
+        line_bbox = temp_draw.textbbox((0, 0), line, font=font)
+        line_width = line_bbox[2] - line_bbox[0]
+        
+        if align == 'center':
+            text_x = (total_width - line_width) // 2
+        elif align == 'right':
+            text_x = total_width - line_width - padding - border_width - (stroke_width if stroke_width else 0)
+        else:
+            text_x = padding + border_width + (stroke_width if stroke_width else 0)
+        
+        if stroke_color and stroke_width > 0:
+            stroke_rgb = hex_to_rgb(stroke_color)
+            draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255), 
+                      stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
+        else:
+            draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255))
+        
+        current_y += line_heights[i] + line_spacing
     
     import numpy as np
     img_array = np.array(img)
     
     clip = MoviePyImageClip(img_array, ismask=False, transparent=True)
     
-    if x is None or align == 'center':
-        final_x = (video_width - total_width) // 2
-    else:
+    if x is not None:
         final_x = x
+    elif align == 'center':
+        final_x = (video_width - total_width) // 2
+    elif align == 'left':
+        final_x = margin
+    elif align == 'right':
+        final_x = video_width - total_width - margin
+    else:
+        final_x = (video_width - total_width) // 2
     
     clip = clip.set_position((final_x, y))
     clip = clip.set_start(start)
