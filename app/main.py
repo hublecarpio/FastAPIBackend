@@ -1052,10 +1052,14 @@ Keep it professional and readable. No background colors unless specifically requ
             except Exception as e:
                 print(f"Style generation failed, using defaults: {e}")
         
-        for word_data in final_words:
+        for i, word_data in enumerate(final_words):
             word = word_data["word"]
             start = word_data["start"]
-            end = word_data["end"]
+            
+            if i + 1 < len(final_words):
+                end = final_words[i + 1]["start"]
+            else:
+                end = word_data["end"]
             
             overlay = {
                 "text": word,
