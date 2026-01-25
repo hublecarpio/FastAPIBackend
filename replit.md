@@ -4,9 +4,14 @@
 FastAPI-based REST API service that generates MP4 videos by combining images and audio. The service downloads images and audio from provided URLs, creates a video using MoviePy, and optionally adds text overlays.
 
 ## Features
-- **POST /generate_video/**: Main endpoint with two modes:
+- **POST /generate_video/**: Generate video from images + audio with two modes:
   - **Auto Duration**: Images divided equally based on audio length
   - **Custom Duration**: Specify duration in seconds for each image individually
+- **POST /concat_videos/**: Concatenate multiple MP4 videos (async with job queue)
+  - Returns job_id immediately, process runs in background
+  - Optional: Replace all video audio with a custom audio track
+  - Check status via GET /jobs/{job_id}
+- **GET /jobs/{job_id}**: Check status of async video jobs (queued, downloading, processing, completed, failed)
 - **GET /videos/{filename}**: Download generated videos
 - **GET /**: Health check endpoint returning API status and version
 - Automatic video generation with libx264 codec and AAC audio at 24 fps
@@ -111,6 +116,70 @@ Generates a video from images and audio.
 }
 ```
 
+### POST /concat_videos/
+Concatenate multiple MP4 videos into one. Runs asynchronously - returns job_id immediately.
+
+**Request Body - Keep original audio:**
+```json
+{
+  "video_urls": [
+    "https://example.com/video1.mp4",
+    "https://example.com/video2.mp4",
+    "https://example.com/video3.mp4"
+  ]
+}
+```
+
+**Request Body - Replace with custom audio:**
+```json
+{
+  "video_urls": [
+    "https://example.com/video1.mp4",
+    "https://example.com/video2.mp4"
+  ],
+  "audio_url": "https://example.com/background-music.mp3"
+}
+```
+
+**Response (immediate):**
+```json
+{
+  "job_id": "abc-123-def",
+  "status": "queued",
+  "message": "Video concatenation job started",
+  "check_status_url": "https://your-domain/jobs/abc-123-def"
+}
+```
+
+### GET /jobs/{job_id}
+Check status of an async video job.
+
+**Response (in progress):**
+```json
+{
+  "job_id": "abc-123-def",
+  "status": "downloading",
+  "progress": 25,
+  "message": "Downloaded 5/20 videos",
+  "total_videos": 20,
+  "has_custom_audio": true
+}
+```
+
+**Response (completed):**
+```json
+{
+  "job_id": "abc-123-def",
+  "status": "completed",
+  "progress": 100,
+  "message": "Video ready",
+  "video_filename": "concat_abc-123-def.mp4",
+  "download_url": "https://your-domain/videos/concat_abc-123-def.mp4"
+}
+```
+
+**Job statuses:** queued → downloading → processing → completed/failed
+
 ## Technical Details
 - **Framework**: FastAPI with Pydantic validation
 - **Video Processing**: MoviePy for video generation
@@ -144,3 +213,8 @@ Generates a video from images and audio.
 - 2025-12-08: Added Docker support with Dockerfile, docker-compose.yml, docker-stack.yml
 - 2025-12-08: Fixed imageio backend error by adding imageio[pyav] dependency
 - 2025-12-08: Added Docker Swarm / Portainer compatible deployment configuration
+- 2026-01-25: Added POST /concat_videos/ endpoint to concatenate multiple MP4 videos
+- 2026-01-25: Implemented async job queue with GET /jobs/{job_id} for status checking
+- 2026-01-25: Added optional audio_url parameter to replace video audio with custom track
+- 2026-01-25: Improved image validation using Pillow before MoviePy processing
+- 2026-01-25: Switched to FFmpeg concat demuxer for faster video concatenation
