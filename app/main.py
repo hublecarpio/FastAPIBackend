@@ -835,6 +835,7 @@ async def get_audio(filename: str):
 
 class KaraokeRequest(BaseModel):
     audio_url: HttpUrl
+    script: Optional[str] = None
     words_per_line: int = 5
     x: int = 100
     y: int = 900
@@ -850,6 +851,7 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
     """
     Generate karaoke-style subtitles where words appear one by one.
     Uses OpenAI Whisper to get word-level timestamps.
+    If 'script' is provided, uses your exact text with Whisper's timestamps.
     Returns overlays ready to use in /concat_videos/
     """
     openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -877,17 +879,52 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
                 timestamp_granularity=["word"]
             )
         
-        words = transcription.words if hasattr(transcription, 'words') else []
+        whisper_words = transcription.words if hasattr(transcription, 'words') else []
         
-        if not words:
+        if not whisper_words:
             raise HTTPException(status_code=400, detail="Could not extract word timestamps from audio")
+        
+        if request.script:
+            import re
+            script_words = re.findall(r'\S+', request.script)
+            
+            if len(script_words) != len(whisper_words):
+                if abs(len(script_words) - len(whisper_words)) <= 3:
+                    min_len = min(len(script_words), len(whisper_words))
+                    script_words = script_words[:min_len]
+                    whisper_words = whisper_words[:min_len]
+                else:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Word count mismatch: script has {len(script_words)} words, audio has {len(whisper_words)} words. They must match for accurate sync."
+                    )
+            
+            final_words = []
+            for i, script_word in enumerate(script_words):
+                whisper_data = whisper_words[i]
+                start = whisper_data.start if hasattr(whisper_data, 'start') else whisper_data.get('start', 0)
+                end = whisper_data.end if hasattr(whisper_data, 'end') else whisper_data.get('end', start + 0.3)
+                final_words.append({
+                    "word": script_word,
+                    "start": start,
+                    "end": end
+                })
+            full_text = request.script
+        else:
+            final_words = []
+            for wd in whisper_words:
+                word = wd.word if hasattr(wd, 'word') else wd.get('word', '')
+                start = wd.start if hasattr(wd, 'start') else wd.get('start', 0)
+                end = wd.end if hasattr(wd, 'end') else wd.get('end', start + 0.3)
+                final_words.append({"word": word, "start": start, "end": end})
+            full_text = transcription.text if hasattr(transcription, 'text') else ""
         
         overlays = []
         words_per_line = request.words_per_line
         
         lines = []
         current_line = []
-        for word_data in words:
+        for word_data in final_words:
             current_line.append(word_data)
             if len(current_line) >= words_per_line:
                 lines.append(current_line)
@@ -898,14 +935,13 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
         for line_words in lines:
             accumulated_text = ""
             for i, word_data in enumerate(line_words):
-                word = word_data.word if hasattr(word_data, 'word') else word_data.get('word', '')
-                start = word_data.start if hasattr(word_data, 'start') else word_data.get('start', 0)
+                word = word_data["word"]
+                start = word_data["start"]
                 
                 if i + 1 < len(line_words):
-                    next_word = line_words[i + 1]
-                    end = next_word.start if hasattr(next_word, 'start') else next_word.get('start', start + 0.3)
+                    end = line_words[i + 1]["start"]
                 else:
-                    end = word_data.end if hasattr(word_data, 'end') else word_data.get('end', start + 0.5)
+                    end = word_data["end"]
                 
                 accumulated_text = (accumulated_text + " " + word).strip()
                 
@@ -928,10 +964,11 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
         
         return JSONResponse(content={
             "message": "Karaoke subtitles generated successfully",
-            "total_words": len(words),
+            "total_words": len(final_words),
             "total_lines": len(lines),
             "words_per_line": words_per_line,
-            "full_text": transcription.text if hasattr(transcription, 'text') else "",
+            "script_provided": request.script is not None,
+            "full_text": full_text,
             "overlays": overlays
         })
         

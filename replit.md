@@ -286,10 +286,11 @@ Split audio into N parts, cutting at natural silence/pause points to avoid mid-w
 Generate karaoke-style subtitles where words appear one by one as they are spoken.
 Uses OpenAI Whisper for word-level timestamp detection.
 
-**Request Body:**
+**Request Body (with script - recommended):**
 ```json
 {
   "audio_url": "https://example.com/speech.mp3",
+  "script": "La ia te va cambiar el negocio si sabes como aplicarla",
   "words_per_line": 5,
   "x": 100,
   "y": 900,
@@ -304,6 +305,7 @@ Uses OpenAI Whisper for word-level timestamp detection.
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | audio_url | Yes | - | URL of audio to transcribe |
+| script | No | null | Your original text/script (recommended for accuracy) |
 | words_per_line | No | 5 | Words per subtitle line before reset |
 | x | No | 100 | X position in pixels |
 | y | No | 900 | Y position in pixels (for 720x1280 videos) |
@@ -313,6 +315,10 @@ Uses OpenAI Whisper for word-level timestamp detection.
 | background_opacity | No | 0.7 | Background opacity (0-1) |
 | padding | No | 10 | Padding around text in pixels |
 
+**How it works:**
+- If `script` is provided: Uses YOUR exact text with Whisper's timestamps (recommended)
+- If `script` is omitted: Uses Whisper's transcription (may have errors)
+
 **Response:**
 ```json
 {
@@ -320,6 +326,7 @@ Uses OpenAI Whisper for word-level timestamp detection.
   "total_words": 42,
   "total_lines": 9,
   "words_per_line": 5,
+  "script_provided": true,
   "full_text": "La ia te va cambiar el negocio si sabes como aplicarla...",
   "overlays": [
     {"text": "La", "start": 0.0, "end": 0.3, "x": 100, "y": 900, "font_size": 48, ...},
