@@ -292,13 +292,13 @@ Uses OpenAI Whisper for word-level timestamp detection.
   "audio_url": "https://example.com/speech.mp3",
   "script": "La ia te va cambiar el negocio si sabes como aplicarla",
   "words_per_line": 5,
-  "x": 100,
   "y": 900,
   "font_size": 48,
   "font_color": "#FFFFFF",
-  "background_color": "#000000",
-  "background_opacity": 0.7,
-  "padding": 10
+  "stroke_color": "#000000",
+  "stroke_width": 2,
+  "align": "center",
+  "style_prompt": "professional, clean, white text with black outline"
 }
 ```
 
@@ -307,17 +307,23 @@ Uses OpenAI Whisper for word-level timestamp detection.
 | audio_url | Yes | - | URL of audio to transcribe |
 | script | No | null | Your original text/script (recommended for accuracy) |
 | words_per_line | No | 5 | Words per subtitle line before reset |
-| x | No | 100 | X position in pixels |
+| x | No | null | X position (null = auto-center) |
 | y | No | 900 | Y position in pixels (for 720x1280 videos) |
 | font_size | No | 48 | Font size in pixels |
 | font_color | No | #FFFFFF | Text color (hex) |
-| background_color | No | #000000 | Background color (hex, null to disable) |
+| stroke_color | No | #000000 | Text outline color (hex) |
+| stroke_width | No | 2 | Outline thickness in pixels |
+| background_color | No | null | Background color (null = no background) |
 | background_opacity | No | 0.7 | Background opacity (0-1) |
 | padding | No | 10 | Padding around text in pixels |
+| align | No | center | Text alignment (center auto-centers horizontally) |
+| style_prompt | No | null | AI-generated style (e.g., "neon glow", "elegant gold") |
 
 **How it works:**
 - If `script` is provided: Uses YOUR exact text with Whisper's timestamps (recommended)
 - If `script` is omitted: Uses Whisper's transcription (may have errors)
+- If `style_prompt` is provided: AI generates professional color/style combinations
+- Text is auto-centered horizontally when `x` is null and `align` is "center"
 
 **Response:**
 ```json
@@ -327,11 +333,13 @@ Uses OpenAI Whisper for word-level timestamp detection.
   "total_lines": 9,
   "words_per_line": 5,
   "script_provided": true,
+  "style_applied": true,
+  "style_config": {"font_color": "#FFFFFF", "stroke_color": "#000000", "stroke_width": 2},
   "full_text": "La ia te va cambiar el negocio si sabes como aplicarla...",
   "overlays": [
-    {"text": "La", "start": 0.0, "end": 0.3, "x": 100, "y": 900, "font_size": 48, ...},
-    {"text": "La ia", "start": 0.3, "end": 0.6, "x": 100, "y": 900, ...},
-    {"text": "La ia te", "start": 0.6, "end": 0.9, "x": 100, "y": 900, ...}
+    {"text": "La", "start": 0.0, "end": 0.3, "y": 900, "font_size": 48, "align": "center", ...},
+    {"text": "La ia", "start": 0.3, "end": 0.6, "y": 900, ...},
+    {"text": "La ia te", "start": 0.6, "end": 0.9, "y": 900, ...}
   ]
 }
 ```

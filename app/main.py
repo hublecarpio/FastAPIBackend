@@ -54,7 +54,7 @@ class TextOverlay(BaseModel):
     text: str
     start: float
     end: float
-    x: int = 0
+    x: Optional[int] = None
     y: int = 0
     font_size: Optional[int] = 40
     font_color: Optional[str] = "#FFFFFF"
@@ -64,7 +64,9 @@ class TextOverlay(BaseModel):
     padding: Optional[int] = 10
     border_color: Optional[str] = None
     border_width: Optional[int] = 0
-    align: Optional[str] = "left"
+    stroke_color: Optional[str] = None
+    stroke_width: Optional[int] = 0
+    align: Optional[str] = "center"
     
     @field_validator('start', 'end')
     @classmethod
@@ -327,7 +329,7 @@ def hex_to_rgb(hex_color: str) -> tuple:
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
 def create_text_clip_with_background(overlay: dict, video_width: int, video_height: int):
-    """Create a TextClip with optional background, padding, and border."""
+    """Create a TextClip with optional background, padding, border, and stroke."""
     from PIL import Image as PILImage, ImageDraw, ImageFont
     from moviepy.editor import ImageClip as MoviePyImageClip
     
@@ -340,8 +342,10 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
     padding = overlay.get('padding', 10)
     border_color = overlay.get('border_color')
     border_width = overlay.get('border_width', 0)
-    align = overlay.get('align', 'left')
-    x = overlay.get('x', 0)
+    stroke_color = overlay.get('stroke_color')
+    stroke_width = overlay.get('stroke_width', 0)
+    align = overlay.get('align', 'center')
+    x = overlay.get('x')
     y = overlay.get('y', 0)
     start = overlay['start']
     end = overlay['end']
@@ -361,8 +365,9 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
-    total_width = text_width + (padding * 2) + (border_width * 2)
-    total_height = text_height + (padding * 2) + (border_width * 2)
+    stroke_extra = stroke_width * 2 if stroke_width else 0
+    total_width = text_width + (padding * 2) + (border_width * 2) + stroke_extra
+    total_height = text_height + (padding * 2) + (border_width * 2) + stroke_extra
     
     img = PILImage.new('RGBA', (total_width, total_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -384,16 +389,28 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
                 outline=(*border_rgb, 255)
             )
     
-    text_x = padding + border_width
-    text_y = padding + border_width
+    text_x = padding + border_width + (stroke_width if stroke_width else 0)
+    text_y = padding + border_width + (stroke_width if stroke_width else 0)
     text_rgb = hex_to_rgb(font_color)
-    draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255))
+    
+    if stroke_color and stroke_width > 0:
+        stroke_rgb = hex_to_rgb(stroke_color)
+        draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255), 
+                  stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
+    else:
+        draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255))
     
     import numpy as np
     img_array = np.array(img)
     
     clip = MoviePyImageClip(img_array, ismask=False, transparent=True)
-    clip = clip.set_position((x, y))
+    
+    if x is None or align == 'center':
+        final_x = (video_width - total_width) // 2
+    else:
+        final_x = x
+    
+    clip = clip.set_position((final_x, y))
     clip = clip.set_start(start)
     clip = clip.set_duration(end - start)
     
@@ -837,13 +854,17 @@ class KaraokeRequest(BaseModel):
     audio_url: HttpUrl
     script: Optional[str] = None
     words_per_line: int = 5
-    x: int = 100
+    x: Optional[int] = None
     y: int = 900
     font_size: int = 48
     font_color: str = "#FFFFFF"
-    background_color: Optional[str] = "#000000"
+    stroke_color: Optional[str] = "#000000"
+    stroke_width: int = 2
+    background_color: Optional[str] = None
     background_opacity: float = 0.7
     padding: int = 10
+    align: str = "center"
+    style_prompt: Optional[str] = None
 
 
 @app.post("/generate_karaoke_subtitles/")
@@ -932,6 +953,34 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
         if current_line:
             lines.append(current_line)
         
+        style_config = None
+        if request.style_prompt:
+            try:
+                style_response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """You are a subtitle style generator. Given a style description, return a JSON object with subtitle styling.
+Only return valid JSON with these fields (use hex colors):
+- font_color: main text color (hex like #FFFFFF)
+- stroke_color: text outline color (hex like #000000)  
+- stroke_width: outline thickness (1-4)
+- font_size: size in pixels (36-72)
+Keep it professional and readable. No background colors unless specifically requested."""
+                        },
+                        {
+                            "role": "user", 
+                            "content": f"Generate subtitle style for: {request.style_prompt}"
+                        }
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                import json
+                style_config = json.loads(style_response.choices[0].message.content)
+            except Exception as e:
+                print(f"Style generation failed, using defaults: {e}")
+        
         for line_words in lines:
             accumulated_text = ""
             for i, word_data in enumerate(line_words):
@@ -949,11 +998,21 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
                     "text": accumulated_text,
                     "start": round(start, 2),
                     "end": round(end, 2),
-                    "x": request.x,
                     "y": request.y,
-                    "font_size": request.font_size,
-                    "font_color": request.font_color
+                    "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
+                    "font_color": style_config.get("font_color", request.font_color) if style_config else request.font_color,
+                    "align": request.align
                 }
+                
+                if request.x is not None:
+                    overlay["x"] = request.x
+                
+                stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
+                stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
+                
+                if stroke_color:
+                    overlay["stroke_color"] = stroke_color
+                    overlay["stroke_width"] = stroke_width
                 
                 if request.background_color:
                     overlay["background_color"] = request.background_color
@@ -968,6 +1027,8 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
             "total_lines": len(lines),
             "words_per_line": words_per_line,
             "script_provided": request.script is not None,
+            "style_applied": style_config is not None,
+            "style_config": style_config,
             "full_text": full_text,
             "overlays": overlays
         })
