@@ -876,7 +876,7 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
                 model="whisper-1",
                 file=audio_file,
                 response_format="verbose_json",
-                timestamp_granularity=["word"]
+                timestamp_granularities=["word"]
             )
         
         whisper_words = transcription.words if hasattr(transcription, 'words') else []
