@@ -1023,17 +1023,6 @@ async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
             full_text = transcription.text if hasattr(transcription, 'text') else ""
         
         overlays = []
-        words_per_line = request.words_per_line
-        
-        lines = []
-        current_line = []
-        for word_data in final_words:
-            current_line.append(word_data)
-            if len(current_line) >= words_per_line:
-                lines.append(current_line)
-                current_line = []
-        if current_line:
-            lines.append(current_line)
         
         style_config = None
         if request.style_prompt:
@@ -1063,51 +1052,41 @@ Keep it professional and readable. No background colors unless specifically requ
             except Exception as e:
                 print(f"Style generation failed, using defaults: {e}")
         
-        for line_words in lines:
-            accumulated_text = ""
-            for i, word_data in enumerate(line_words):
-                word = word_data["word"]
-                start = word_data["start"]
-                
-                if i + 1 < len(line_words):
-                    end = line_words[i + 1]["start"]
-                else:
-                    end = word_data["end"]
-                
-                accumulated_text = (accumulated_text + " " + word).strip()
-                
-                overlay = {
-                    "text": accumulated_text,
-                    "start": round(start, 2),
-                    "end": round(end, 2),
-                    "y": request.y,
-                    "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
-                    "font_color": style_config.get("font_color", request.font_color) if style_config else request.font_color,
-                    "align": request.align
-                }
-                
-                if request.x is not None:
-                    overlay["x"] = request.x
-                
-                stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
-                stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
-                
-                if stroke_color:
-                    overlay["stroke_color"] = stroke_color
-                    overlay["stroke_width"] = stroke_width
-                
-                if request.background_color:
-                    overlay["background_color"] = request.background_color
-                    overlay["background_opacity"] = request.background_opacity
-                    overlay["padding"] = request.padding
-                
-                overlays.append(overlay)
+        for word_data in final_words:
+            word = word_data["word"]
+            start = word_data["start"]
+            end = word_data["end"]
+            
+            overlay = {
+                "text": word,
+                "start": round(start, 2),
+                "end": round(end, 2),
+                "y": request.y,
+                "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
+                "font_color": style_config.get("font_color", request.font_color) if style_config else request.font_color,
+                "align": request.align
+            }
+            
+            if request.x is not None:
+                overlay["x"] = request.x
+            
+            stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
+            stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
+            
+            if stroke_color:
+                overlay["stroke_color"] = stroke_color
+                overlay["stroke_width"] = stroke_width
+            
+            if request.background_color:
+                overlay["background_color"] = request.background_color
+                overlay["background_opacity"] = request.background_opacity
+                overlay["padding"] = request.padding
+            
+            overlays.append(overlay)
         
         return JSONResponse(content={
             "message": "Karaoke subtitles generated successfully",
             "total_words": len(final_words),
-            "total_lines": len(lines),
-            "words_per_line": words_per_line,
             "script_provided": request.script is not None,
             "style_applied": style_config is not None,
             "style_config": style_config,
