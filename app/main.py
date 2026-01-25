@@ -49,6 +49,7 @@ class VideoRequest(BaseModel):
 
 class ConcatVideosRequest(BaseModel):
     video_urls: List[HttpUrl]
+    audio_url: Optional[HttpUrl] = None
 
 def download_and_validate_image(url: str, save_path: Path, idx: int) -> Path:
     """Download image, validate it's a real image, and save as PNG."""
@@ -271,7 +272,33 @@ def download_and_validate_video(url: str, save_path: Path, idx: int) -> Path:
     except requests.exceptions.RequestException as e:
         raise ValueError(f"Download failed: {str(e)}")
 
-def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
+def download_audio_file(url: str, save_path: Path) -> Path:
+    """Download audio file."""
+    try:
+        response = requests.get(url, headers=DOWNLOAD_HEADERS, timeout=60, stream=True)
+        response.raise_for_status()
+        
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            raise ValueError(f"URL returned HTML instead of audio")
+        
+        ext = os.path.splitext(url.split('?')[0])[1] or '.mp3'
+        audio_path = save_path.with_suffix(ext)
+        
+        with open(audio_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        file_size = audio_path.stat().st_size
+        if file_size < 1000:
+            raise ValueError(f"Downloaded file too small ({file_size} bytes)")
+        
+        return audio_path
+        
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"Download failed: {str(e)}")
+
+def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_url: Optional[str] = None):
     """Background task to concatenate videos."""
     temp_session_dir = TEMP_DIR / job_id
     temp_session_dir.mkdir(parents=True, exist_ok=True)
@@ -288,7 +315,7 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
                 video_path = temp_session_dir / f"video_{idx}"
                 validated_path = download_and_validate_video(video_url, video_path, idx)
                 downloaded_videos.append(validated_path)
-                jobs_store[job_id]["progress"] = int((idx + 1) / total_videos * 50)
+                jobs_store[job_id]["progress"] = int((idx + 1) / total_videos * 40)
                 jobs_store[job_id]["message"] = f"Downloaded {idx + 1}/{total_videos} videos"
             except ValueError as e:
                 jobs_store[job_id]["status"] = "failed"
@@ -299,6 +326,17 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
             jobs_store[job_id]["status"] = "failed"
             jobs_store[job_id]["error"] = "No videos were successfully downloaded"
             return
+        
+        audio_path = None
+        if audio_url:
+            try:
+                jobs_store[job_id]["progress"] = 45
+                jobs_store[job_id]["message"] = "Downloading audio..."
+                audio_path = download_audio_file(audio_url, temp_session_dir / "audio")
+            except ValueError as e:
+                jobs_store[job_id]["status"] = "failed"
+                jobs_store[job_id]["error"] = f"Audio download failed: {str(e)}"
+                return
         
         jobs_store[job_id]["status"] = "processing"
         jobs_store[job_id]["progress"] = 50
@@ -313,31 +351,64 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str):
             video_filename = f"concat_{job_id}.mp4"
             output_path = OUTPUT_DIR / video_filename
             
-            cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', str(concat_list_path),
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-movflags', '+faststart',
-                str(output_path)
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            
-            if result.returncode != 0:
-                cmd_reencode = [
+            if audio_url and audio_path:
+                cmd = [
                     'ffmpeg', '-y',
                     '-f', 'concat',
                     '-safe', '0',
                     '-i', str(concat_list_path),
-                    '-c:v', 'libx264',
+                    '-i', str(audio_path),
+                    '-map', '0:v',
+                    '-map', '1:a',
+                    '-c:v', 'copy',
                     '-c:a', 'aac',
-                    '-preset', 'fast',
+                    '-shortest',
                     '-movflags', '+faststart',
                     str(output_path)
                 ]
+            else:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', str(concat_list_path),
+                    '-c:v', 'copy',
+                    '-c:a', 'copy',
+                    '-movflags', '+faststart',
+                    str(output_path)
+                ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                if audio_url and audio_path:
+                    cmd_reencode = [
+                        'ffmpeg', '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', str(concat_list_path),
+                        '-i', str(audio_path),
+                        '-map', '0:v',
+                        '-map', '1:a',
+                        '-c:v', 'libx264',
+                        '-c:a', 'aac',
+                        '-preset', 'fast',
+                        '-shortest',
+                        '-movflags', '+faststart',
+                        str(output_path)
+                    ]
+                else:
+                    cmd_reencode = [
+                        'ffmpeg', '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', str(concat_list_path),
+                        '-c:v', 'libx264',
+                        '-c:a', 'aac',
+                        '-preset', 'fast',
+                        '-movflags', '+faststart',
+                        str(output_path)
+                    ]
                 result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
                 
                 if result.returncode != 0:
@@ -381,12 +452,15 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     job_id = str(uuid.uuid4())
     base_url = str(req.base_url).rstrip('/')
     
+    audio_url_str = str(request.audio_url) if request.audio_url else None
+    
     jobs_store[job_id] = {
         "job_id": job_id,
         "status": "queued",
         "progress": 0,
         "message": "Job queued",
         "total_videos": len(request.video_urls),
+        "has_custom_audio": audio_url_str is not None,
         "created_at": datetime.now().isoformat(),
         "video_filename": None,
         "download_url": None,
@@ -394,7 +468,7 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     }
     
     video_urls = [str(url) for url in request.video_urls]
-    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url))
+    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url, audio_url_str))
     thread.start()
     
     return JSONResponse(content={
