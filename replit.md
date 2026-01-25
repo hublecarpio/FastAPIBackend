@@ -282,6 +282,55 @@ Split audio into N parts, cutting at natural silence/pause points to avoid mid-w
 }
 ```
 
+### POST /generate_karaoke_subtitles/
+Generate karaoke-style subtitles where words appear one by one as they are spoken.
+Uses OpenAI Whisper for word-level timestamp detection.
+
+**Request Body:**
+```json
+{
+  "audio_url": "https://example.com/speech.mp3",
+  "words_per_line": 5,
+  "x": 100,
+  "y": 900,
+  "font_size": 48,
+  "font_color": "#FFFFFF",
+  "background_color": "#000000",
+  "background_opacity": 0.7,
+  "padding": 10
+}
+```
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| audio_url | Yes | - | URL of audio to transcribe |
+| words_per_line | No | 5 | Words per subtitle line before reset |
+| x | No | 100 | X position in pixels |
+| y | No | 900 | Y position in pixels (for 720x1280 videos) |
+| font_size | No | 48 | Font size in pixels |
+| font_color | No | #FFFFFF | Text color (hex) |
+| background_color | No | #000000 | Background color (hex, null to disable) |
+| background_opacity | No | 0.7 | Background opacity (0-1) |
+| padding | No | 10 | Padding around text in pixels |
+
+**Response:**
+```json
+{
+  "message": "Karaoke subtitles generated successfully",
+  "total_words": 42,
+  "total_lines": 9,
+  "words_per_line": 5,
+  "full_text": "La ia te va cambiar el negocio si sabes como aplicarla...",
+  "overlays": [
+    {"text": "La", "start": 0.0, "end": 0.3, "x": 100, "y": 900, "font_size": 48, ...},
+    {"text": "La ia", "start": 0.3, "end": 0.6, "x": 100, "y": 900, ...},
+    {"text": "La ia te", "start": 0.6, "end": 0.9, "x": 100, "y": 900, ...}
+  ]
+}
+```
+
+**Note:** The `overlays` array can be used directly in the `/concat_videos/` endpoint.
+
 ## Technical Details
 - **Framework**: FastAPI with Pydantic validation
 - **Video Processing**: MoviePy for video generation
@@ -301,6 +350,7 @@ Split audio into N parts, cutting at natural silence/pause points to avoid mid-w
 - imageio[pyav]: Image/video I/O backend
 - numpy: Numerical processing
 - pydub: Audio processing and silence detection
+- openai: OpenAI API for Whisper transcription
 
 ### System Dependencies
 - FFmpeg: Video encoding and processing (installed via Replit)
@@ -323,3 +373,5 @@ Split audio into N parts, cutting at natural silence/pause points to avoid mid-w
 - 2026-01-25: Switched to FFmpeg concat demuxer for faster video concatenation
 - 2026-01-25: Added POST /split_audio/ endpoint for intelligent audio splitting at silence points
 - 2026-01-25: Added text overlays/subtitles support to concat_videos with timing, position, colors, background, padding, and border
+- 2026-01-25: Added POST /generate_karaoke_subtitles/ endpoint for karaoke-style word-by-word subtitles using OpenAI Whisper
+- 2026-01-25: Improved video quality with CRF 18, 8000k bitrate, and medium preset for overlays

@@ -3,6 +3,8 @@ version: '3.8'
 services:
   video-api:
     image: iamhuble/video-generator-api:latest
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - video_output:/app/output
     networks:

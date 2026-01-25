@@ -15,6 +15,7 @@ from datetime import datetime
 from moviepy.editor import ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
 from pydub import AudioSegment
 from pydub.silence import detect_silence
+from openai import OpenAI
 
 app = FastAPI(title="Video Generator API", version="1.0")
 
@@ -830,6 +831,122 @@ async def get_audio(filename: str):
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio not found")
     return FileResponse(audio_path, media_type="audio/mpeg", filename=filename)
+
+
+class KaraokeRequest(BaseModel):
+    audio_url: HttpUrl
+    words_per_line: int = 5
+    x: int = 100
+    y: int = 900
+    font_size: int = 48
+    font_color: str = "#FFFFFF"
+    background_color: Optional[str] = "#000000"
+    background_opacity: float = 0.7
+    padding: int = 10
+
+
+@app.post("/generate_karaoke_subtitles/")
+async def generate_karaoke_subtitles(request: KaraokeRequest, req: Request):
+    """
+    Generate karaoke-style subtitles where words appear one by one.
+    Uses OpenAI Whisper to get word-level timestamps.
+    Returns overlays ready to use in /concat_videos/
+    """
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+    
+    temp_session_dir = TEMP_DIR / f"karaoke_{uuid.uuid4().hex[:8]}"
+    temp_session_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        response = requests.get(str(request.audio_url), headers=DOWNLOAD_HEADERS, timeout=120)
+        response.raise_for_status()
+        
+        audio_path = temp_session_dir / "audio.mp3"
+        with open(audio_path, 'wb') as f:
+            f.write(response.content)
+        
+        client = OpenAI(api_key=openai_api_key)
+        
+        with open(audio_path, 'rb') as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularity=["word"]
+            )
+        
+        words = transcription.words if hasattr(transcription, 'words') else []
+        
+        if not words:
+            raise HTTPException(status_code=400, detail="Could not extract word timestamps from audio")
+        
+        overlays = []
+        words_per_line = request.words_per_line
+        
+        lines = []
+        current_line = []
+        for word_data in words:
+            current_line.append(word_data)
+            if len(current_line) >= words_per_line:
+                lines.append(current_line)
+                current_line = []
+        if current_line:
+            lines.append(current_line)
+        
+        for line_words in lines:
+            accumulated_text = ""
+            for i, word_data in enumerate(line_words):
+                word = word_data.word if hasattr(word_data, 'word') else word_data.get('word', '')
+                start = word_data.start if hasattr(word_data, 'start') else word_data.get('start', 0)
+                
+                if i + 1 < len(line_words):
+                    next_word = line_words[i + 1]
+                    end = next_word.start if hasattr(next_word, 'start') else next_word.get('start', start + 0.3)
+                else:
+                    end = word_data.end if hasattr(word_data, 'end') else word_data.get('end', start + 0.5)
+                
+                accumulated_text = (accumulated_text + " " + word).strip()
+                
+                overlay = {
+                    "text": accumulated_text,
+                    "start": round(start, 2),
+                    "end": round(end, 2),
+                    "x": request.x,
+                    "y": request.y,
+                    "font_size": request.font_size,
+                    "font_color": request.font_color
+                }
+                
+                if request.background_color:
+                    overlay["background_color"] = request.background_color
+                    overlay["background_opacity"] = request.background_opacity
+                    overlay["padding"] = request.padding
+                
+                overlays.append(overlay)
+        
+        return JSONResponse(content={
+            "message": "Karaoke subtitles generated successfully",
+            "total_words": len(words),
+            "total_lines": len(lines),
+            "words_per_line": words_per_line,
+            "full_text": transcription.text if hasattr(transcription, 'text') else "",
+            "overlays": overlays
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating karaoke subtitles: {str(e)}")
+    
+    finally:
+        if temp_session_dir.exists():
+            try:
+                shutil.rmtree(temp_session_dir)
+            except:
+                pass
+
 
 if __name__ == "__main__":
     import uvicorn
