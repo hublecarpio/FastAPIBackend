@@ -507,7 +507,9 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                     codec='libx264',
                     audio_codec='aac',
                     fps=24,
-                    preset='fast',
+                    preset='medium',
+                    bitrate='8000k',
+                    ffmpeg_params=['-crf', '18'],
                     logger=None
                 )
                 
