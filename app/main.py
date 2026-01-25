@@ -13,6 +13,8 @@ from PIL import Image
 import io
 from datetime import datetime
 from moviepy.editor import ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip
+from pydub import AudioSegment
+from pydub.silence import detect_silence
 
 app = FastAPI(title="Video Generator API", version="1.0")
 
@@ -50,6 +52,21 @@ class VideoRequest(BaseModel):
 class ConcatVideosRequest(BaseModel):
     video_urls: List[HttpUrl]
     audio_url: Optional[HttpUrl] = None
+
+class SplitAudioRequest(BaseModel):
+    audio_url: HttpUrl
+    parts: int
+    min_silence_len: Optional[int] = 300
+    silence_thresh: Optional[int] = -40
+    
+    @field_validator('parts')
+    @classmethod
+    def validate_parts(cls, v):
+        if v < 2:
+            raise ValueError('parts must be at least 2')
+        if v > 100:
+            raise ValueError('parts cannot exceed 100')
+        return v
 
 def download_and_validate_image(url: str, save_path: Path, idx: int) -> Path:
     """Download image, validate it's a real image, and save as PNG."""
@@ -486,6 +503,164 @@ async def get_job_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     
     return JSONResponse(content=jobs_store[job_id])
+
+def find_nearest_silence(target_ms: float, silence_ranges: List[tuple], tolerance_ms: float = 2000) -> Optional[float]:
+    """Find the silence point nearest to target_ms within tolerance."""
+    best_point = None
+    best_distance = float('inf')
+    
+    for start, end in silence_ranges:
+        midpoint = (start + end) / 2
+        distance = abs(midpoint - target_ms)
+        
+        if distance < best_distance and distance <= tolerance_ms:
+            best_distance = distance
+            best_point = midpoint
+    
+    return best_point
+
+def smart_split_audio(audio: AudioSegment, num_parts: int, min_silence_len: int = 300, silence_thresh: int = -40) -> List[tuple]:
+    """
+    Split audio into N parts, cutting at silence points when possible.
+    Returns list of (start_ms, end_ms) tuples.
+    """
+    total_duration = len(audio)
+    ideal_segment_length = total_duration / num_parts
+    
+    silence_ranges = detect_silence(
+        audio,
+        min_silence_len=min_silence_len,
+        silence_thresh=silence_thresh,
+        seek_step=10
+    )
+    
+    segments = []
+    current_start = 0
+    
+    for i in range(num_parts - 1):
+        ideal_end = current_start + ideal_segment_length
+        
+        tolerance = ideal_segment_length * 0.4
+        
+        silence_point = find_nearest_silence(ideal_end, silence_ranges, tolerance)
+        
+        if silence_point is not None:
+            actual_end = silence_point
+        else:
+            actual_end = ideal_end
+        
+        actual_end = min(actual_end, total_duration)
+        
+        segments.append((current_start, actual_end))
+        current_start = actual_end
+    
+    segments.append((current_start, total_duration))
+    
+    return segments
+
+@app.post("/split_audio/")
+async def split_audio(request: SplitAudioRequest, req: Request):
+    """
+    Split audio into N parts, cutting at natural silence/pause points.
+    Returns URLs to download each audio segment.
+    """
+    temp_session_dir = TEMP_DIR / str(uuid.uuid4())
+    temp_session_dir.mkdir(parents=True, exist_ok=True)
+    
+    split_id = str(uuid.uuid4())[:8]
+    
+    try:
+        try:
+            response = requests.get(str(request.audio_url), headers=DOWNLOAD_HEADERS, timeout=60)
+            response.raise_for_status()
+            
+            content_type = response.headers.get('content-type', '')
+            if 'text/html' in content_type.lower():
+                raise ValueError("URL returned HTML instead of audio")
+            
+            ext = os.path.splitext(str(request.audio_url).split('?')[0])[1] or '.mp3'
+            audio_path = temp_session_dir / f"original{ext}"
+            
+            with open(audio_path, 'wb') as f:
+                f.write(response.content)
+                
+            if audio_path.stat().st_size < 1000:
+                raise ValueError("Downloaded file too small, likely not valid audio")
+                
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to download audio: {str(e)}"
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        try:
+            audio = AudioSegment.from_file(str(audio_path))
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to process audio file: {str(e)}"
+            )
+        
+        total_duration_ms = len(audio)
+        total_duration_sec = total_duration_ms / 1000.0
+        
+        segments = smart_split_audio(
+            audio,
+            request.parts,
+            min_silence_len=request.min_silence_len,
+            silence_thresh=request.silence_thresh
+        )
+        
+        base_url = str(req.base_url).rstrip('/')
+        segment_results = []
+        
+        for idx, (start_ms, end_ms) in enumerate(segments):
+            segment_audio = audio[start_ms:end_ms]
+            
+            segment_filename = f"segment_{split_id}_{idx + 1}.mp3"
+            segment_path = OUTPUT_DIR / segment_filename
+            
+            segment_audio.export(str(segment_path), format="mp3", bitrate="192k")
+            
+            segment_results.append({
+                "index": idx + 1,
+                "start": round(start_ms / 1000.0, 2),
+                "end": round(end_ms / 1000.0, 2),
+                "duration": round((end_ms - start_ms) / 1000.0, 2),
+                "filename": segment_filename,
+                "download_url": f"{base_url}/audios/{segment_filename}"
+            })
+        
+        return JSONResponse(content={
+            "message": "Audio split successfully",
+            "split_id": split_id,
+            "original_duration": round(total_duration_sec, 2),
+            "requested_parts": request.parts,
+            "actual_parts": len(segments),
+            "segments": segment_results
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    
+    finally:
+        if temp_session_dir.exists():
+            try:
+                shutil.rmtree(temp_session_dir)
+            except:
+                pass
+
+@app.get("/audios/{filename}")
+async def get_audio(filename: str):
+    """Download a generated audio segment."""
+    audio_path = OUTPUT_DIR / filename
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(audio_path, media_type="audio/mpeg", filename=filename)
 
 if __name__ == "__main__":
     import uvicorn
