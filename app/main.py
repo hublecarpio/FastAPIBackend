@@ -49,9 +49,40 @@ class VideoRequest(BaseModel):
     audio_url: HttpUrl
     title_text: Optional[str] = None
 
+class TextOverlay(BaseModel):
+    text: str
+    start: float
+    end: float
+    x: int = 0
+    y: int = 0
+    font_size: Optional[int] = 40
+    font_color: Optional[str] = "#FFFFFF"
+    font_family: Optional[str] = "DejaVu-Sans"
+    background_color: Optional[str] = None
+    background_opacity: Optional[float] = 0.7
+    padding: Optional[int] = 10
+    border_color: Optional[str] = None
+    border_width: Optional[int] = 0
+    align: Optional[str] = "left"
+    
+    @field_validator('start', 'end')
+    @classmethod
+    def validate_times(cls, v):
+        if v < 0:
+            raise ValueError('time values must be >= 0')
+        return v
+    
+    @field_validator('align')
+    @classmethod
+    def validate_align(cls, v):
+        if v not in ['left', 'center', 'right']:
+            raise ValueError('align must be left, center, or right')
+        return v
+
 class ConcatVideosRequest(BaseModel):
     video_urls: List[HttpUrl]
     audio_url: Optional[HttpUrl] = None
+    overlays: Optional[List[TextOverlay]] = None
 
 class SplitAudioRequest(BaseModel):
     audio_url: HttpUrl
@@ -289,6 +320,84 @@ def download_and_validate_video(url: str, save_path: Path, idx: int) -> Path:
     except requests.exceptions.RequestException as e:
         raise ValueError(f"Download failed: {str(e)}")
 
+def hex_to_rgb(hex_color: str) -> tuple:
+    """Convert hex color to RGB tuple."""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+def create_text_clip_with_background(overlay: dict, video_width: int, video_height: int):
+    """Create a TextClip with optional background, padding, and border."""
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from moviepy.editor import ImageClip as MoviePyImageClip
+    
+    text = overlay['text']
+    font_size = overlay.get('font_size', 40)
+    font_color = overlay.get('font_color', '#FFFFFF')
+    font_family = overlay.get('font_family', 'DejaVu-Sans')
+    background_color = overlay.get('background_color')
+    background_opacity = overlay.get('background_opacity', 0.7)
+    padding = overlay.get('padding', 10)
+    border_color = overlay.get('border_color')
+    border_width = overlay.get('border_width', 0)
+    align = overlay.get('align', 'left')
+    x = overlay.get('x', 0)
+    y = overlay.get('y', 0)
+    start = overlay['start']
+    end = overlay['end']
+    
+    try:
+        font_path = f"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+    
+    temp_img = PILImage.new('RGBA', (1, 1))
+    temp_draw = ImageDraw.Draw(temp_img)
+    bbox = temp_draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    total_width = text_width + (padding * 2) + (border_width * 2)
+    total_height = text_height + (padding * 2) + (border_width * 2)
+    
+    img = PILImage.new('RGBA', (total_width, total_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    if background_color:
+        bg_rgb = hex_to_rgb(background_color)
+        bg_alpha = int(background_opacity * 255)
+        bg_color_rgba = (*bg_rgb, bg_alpha)
+        draw.rectangle(
+            [border_width, border_width, total_width - border_width - 1, total_height - border_width - 1],
+            fill=bg_color_rgba
+        )
+    
+    if border_color and border_width > 0:
+        border_rgb = hex_to_rgb(border_color)
+        for i in range(border_width):
+            draw.rectangle(
+                [i, i, total_width - i - 1, total_height - i - 1],
+                outline=(*border_rgb, 255)
+            )
+    
+    text_x = padding + border_width
+    text_y = padding + border_width
+    text_rgb = hex_to_rgb(font_color)
+    draw.text((text_x, text_y), text, font=font, fill=(*text_rgb, 255))
+    
+    import numpy as np
+    img_array = np.array(img)
+    
+    clip = MoviePyImageClip(img_array, ismask=False, transparent=True)
+    clip = clip.set_position((x, y))
+    clip = clip.set_start(start)
+    clip = clip.set_duration(end - start)
+    
+    return clip
+
 def download_audio_file(url: str, save_path: Path) -> Path:
     """Download audio file."""
     try:
@@ -315,8 +424,8 @@ def download_audio_file(url: str, save_path: Path) -> Path:
     except requests.exceptions.RequestException as e:
         raise ValueError(f"Download failed: {str(e)}")
 
-def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_url: Optional[str] = None):
-    """Background task to concatenate videos."""
+def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_url: Optional[str] = None, overlays: Optional[List[dict]] = None):
+    """Background task to concatenate videos with optional overlays."""
     temp_session_dir = TEMP_DIR / job_id
     temp_session_dir.mkdir(parents=True, exist_ok=True)
     
@@ -359,47 +468,62 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
         jobs_store[job_id]["progress"] = 50
         jobs_store[job_id]["message"] = "Concatenating videos..."
         
+        video_filename = f"concat_{job_id}.mp4"
+        output_path = OUTPUT_DIR / video_filename
+        
         try:
-            concat_list_path = temp_session_dir / "concat_list.txt"
-            with open(concat_list_path, 'w') as f:
+            if overlays and len(overlays) > 0:
+                jobs_store[job_id]["message"] = "Processing with overlays (re-encoding)..."
+                
+                video_clips = []
                 for video_path in downloaded_videos:
-                    f.write(f"file '{video_path.absolute()}'\n")
-            
-            video_filename = f"concat_{job_id}.mp4"
-            output_path = OUTPUT_DIR / video_filename
-            
-            if audio_url and audio_path:
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', str(concat_list_path),
-                    '-i', str(audio_path),
-                    '-map', '0:v',
-                    '-map', '1:a',
-                    '-c:v', 'copy',
-                    '-c:a', 'aac',
-                    '-shortest',
-                    '-movflags', '+faststart',
-                    str(output_path)
-                ]
-            else:
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', str(concat_list_path),
-                    '-c:v', 'copy',
-                    '-c:a', 'copy',
-                    '-movflags', '+faststart',
-                    str(output_path)
-                ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            
-            if result.returncode != 0:
+                    clip = VideoFileClip(str(video_path))
+                    video_clips.append(clip)
+                
+                concatenated = concatenate_videoclips(video_clips, method="compose")
+                
+                video_width = int(concatenated.w)
+                video_height = int(concatenated.h)
+                
+                overlay_clips = []
+                for overlay in overlays:
+                    try:
+                        overlay_clip = create_text_clip_with_background(overlay, video_width, video_height)
+                        overlay_clips.append(overlay_clip)
+                    except Exception as e:
+                        print(f"Warning: Failed to create overlay: {e}")
+                
+                if overlay_clips:
+                    final_video = CompositeVideoClip([concatenated] + overlay_clips)
+                else:
+                    final_video = concatenated
+                
                 if audio_url and audio_path:
-                    cmd_reencode = [
+                    custom_audio = AudioFileClip(str(audio_path))
+                    final_video = final_video.set_audio(custom_audio)
+                
+                final_video.write_videofile(
+                    str(output_path),
+                    codec='libx264',
+                    audio_codec='aac',
+                    fps=24,
+                    preset='fast',
+                    logger=None
+                )
+                
+                for clip in video_clips:
+                    clip.close()
+                final_video.close()
+                if audio_url and audio_path:
+                    custom_audio.close()
+            else:
+                concat_list_path = temp_session_dir / "concat_list.txt"
+                with open(concat_list_path, 'w') as f:
+                    for video_path in downloaded_videos:
+                        f.write(f"file '{video_path.absolute()}'\n")
+                
+                if audio_url and audio_path:
+                    cmd = [
                         'ffmpeg', '-y',
                         '-f', 'concat',
                         '-safe', '0',
@@ -407,29 +531,59 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                         '-i', str(audio_path),
                         '-map', '0:v',
                         '-map', '1:a',
-                        '-c:v', 'libx264',
+                        '-c:v', 'copy',
                         '-c:a', 'aac',
-                        '-preset', 'fast',
                         '-shortest',
                         '-movflags', '+faststart',
                         str(output_path)
                     ]
                 else:
-                    cmd_reencode = [
+                    cmd = [
                         'ffmpeg', '-y',
                         '-f', 'concat',
                         '-safe', '0',
                         '-i', str(concat_list_path),
-                        '-c:v', 'libx264',
-                        '-c:a', 'aac',
-                        '-preset', 'fast',
+                        '-c:v', 'copy',
+                        '-c:a', 'copy',
                         '-movflags', '+faststart',
                         str(output_path)
                     ]
-                result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                 
                 if result.returncode != 0:
-                    raise Exception(f"FFmpeg failed: {result.stderr[:500]}")
+                    if audio_url and audio_path:
+                        cmd_reencode = [
+                            'ffmpeg', '-y',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', str(concat_list_path),
+                            '-i', str(audio_path),
+                            '-map', '0:v',
+                            '-map', '1:a',
+                            '-c:v', 'libx264',
+                            '-c:a', 'aac',
+                            '-preset', 'fast',
+                            '-shortest',
+                            '-movflags', '+faststart',
+                            str(output_path)
+                        ]
+                    else:
+                        cmd_reencode = [
+                            'ffmpeg', '-y',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', str(concat_list_path),
+                            '-c:v', 'libx264',
+                            '-c:a', 'aac',
+                            '-preset', 'fast',
+                            '-movflags', '+faststart',
+                            str(output_path)
+                        ]
+                    result = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=600)
+                    
+                    if result.returncode != 0:
+                        raise Exception(f"FFmpeg failed: {result.stderr[:500]}")
             
             jobs_store[job_id]["status"] = "completed"
             jobs_store[job_id]["progress"] = 100
@@ -458,7 +612,15 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
 
 @app.post("/concat_videos/")
 async def concat_videos(request: ConcatVideosRequest, req: Request):
-    """Start async video concatenation job. Returns job_id immediately."""
+    """
+    Start async video concatenation job. Returns job_id immediately.
+    
+    Supports 4 modes:
+    - Only video_urls: Concatenate videos keeping original audio
+    - video_urls + audio_url: Concatenate videos and replace audio
+    - video_urls + overlays: Concatenate videos with text overlays (uses original audio)
+    - video_urls + audio_url + overlays: Full customization
+    """
     
     if len(request.video_urls) < 2:
         raise HTTPException(
@@ -471,6 +633,10 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     
     audio_url_str = str(request.audio_url) if request.audio_url else None
     
+    overlays_list = None
+    if request.overlays:
+        overlays_list = [overlay.model_dump() for overlay in request.overlays]
+    
     jobs_store[job_id] = {
         "job_id": job_id,
         "status": "queued",
@@ -478,6 +644,7 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
         "message": "Job queued",
         "total_videos": len(request.video_urls),
         "has_custom_audio": audio_url_str is not None,
+        "has_overlays": overlays_list is not None and len(overlays_list) > 0,
         "created_at": datetime.now().isoformat(),
         "video_filename": None,
         "download_url": None,
@@ -485,7 +652,7 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     }
     
     video_urls = [str(url) for url in request.video_urls]
-    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url, audio_url_str))
+    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url, audio_url_str, overlays_list))
     thread.start()
     
     return JSONResponse(content={

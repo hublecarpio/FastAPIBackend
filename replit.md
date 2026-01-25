@@ -124,6 +124,14 @@ Generates a video from images and audio.
 ### POST /concat_videos/
 Concatenate multiple MP4 videos into one. Runs asynchronously - returns job_id immediately.
 
+**Supports 4 modes:**
+| video_urls | audio_url | overlays | Result |
+|------------|-----------|----------|--------|
+| ✅ | ❌ | ❌ | Concatenate with original audio |
+| ✅ | ✅ | ❌ | Concatenate + replace audio |
+| ✅ | ❌ | ✅ | Concatenate with original audio + subtitles |
+| ✅ | ✅ | ✅ | Full customization |
+
 **Request Body - Keep original audio:**
 ```json
 {
@@ -145,6 +153,60 @@ Concatenate multiple MP4 videos into one. Runs asynchronously - returns job_id i
   "audio_url": "https://example.com/background-music.mp3"
 }
 ```
+
+**Request Body - With text overlays/subtitles:**
+```json
+{
+  "video_urls": [
+    "https://example.com/video1.mp4",
+    "https://example.com/video2.mp4"
+  ],
+  "audio_url": "https://example.com/voiceover.mp3",
+  "overlays": [
+    {
+      "text": "First subtitle",
+      "start": 0.0,
+      "end": 3.5,
+      "x": 100,
+      "y": 1100,
+      "font_size": 48,
+      "font_color": "#FFFFFF",
+      "background_color": "#000000",
+      "background_opacity": 0.7,
+      "padding": 10,
+      "border_color": "#FF0000",
+      "border_width": 2
+    },
+    {
+      "text": "Second subtitle",
+      "start": 3.5,
+      "end": 7.0,
+      "x": 100,
+      "y": 1100
+    }
+  ]
+}
+```
+
+**Overlay properties:**
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| text | Yes | - | Text to display |
+| start | Yes | - | Start time in seconds |
+| end | Yes | - | End time in seconds |
+| x | No | 0 | X position in pixels |
+| y | No | 0 | Y position in pixels |
+| font_size | No | 40 | Font size in pixels |
+| font_color | No | #FFFFFF | Text color (hex) |
+| font_family | No | DejaVu-Sans | Font family |
+| background_color | No | null | Background color (hex) |
+| background_opacity | No | 0.7 | Background opacity (0-1) |
+| padding | No | 10 | Padding around text in pixels |
+| border_color | No | null | Border color (hex) |
+| border_width | No | 0 | Border width in pixels |
+| align | No | left | Text alignment (left, center, right) |
+
+**Note:** Using overlays requires re-encoding (slower than copy mode), but allows text overlays.
 
 **Response (immediate):**
 ```json
@@ -260,3 +322,4 @@ Split audio into N parts, cutting at natural silence/pause points to avoid mid-w
 - 2026-01-25: Improved image validation using Pillow before MoviePy processing
 - 2026-01-25: Switched to FFmpeg concat demuxer for faster video concatenation
 - 2026-01-25: Added POST /split_audio/ endpoint for intelligent audio splitting at silence points
+- 2026-01-25: Added text overlays/subtitles support to concat_videos with timing, position, colors, background, padding, and border
