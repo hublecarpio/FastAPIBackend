@@ -320,6 +320,7 @@ Uses OpenAI Whisper for word-level timestamp detection.
 | style_prompt | No | null | AI-generated style (e.g., "neon glow", "elegant gold") |
 
 **How it works:**
+- Each word appears individually for its duration then disappears (no accumulation)
 - If `script` is provided: Uses YOUR exact text with Whisper's timestamps (recommended)
 - If `script` is omitted: Uses Whisper's transcription (may have errors)
 - If `style_prompt` is provided: AI generates professional color/style combinations
