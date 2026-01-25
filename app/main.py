@@ -67,6 +67,8 @@ class TextOverlay(BaseModel):
     stroke_color: Optional[str] = None
     stroke_width: Optional[int] = 0
     align: Optional[str] = "center"
+    highlight_word_index: Optional[int] = None
+    highlight_color: Optional[str] = None
     
     @field_validator('start', 'end')
     @classmethod
