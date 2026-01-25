@@ -27,9 +27,17 @@ The application is built on FastAPI, leveraging its asynchronous capabilities an
     - Generates karaoke-style subtitles from an audio URL and an optional script.
     - Utilizes OpenAI Whisper for word-level timestamp detection.
     - Supports "word" mode (each word appears individually) and "highlight" mode (full line visible, active word highlighted).
-    - Customizable subtitle styling including position, font size, colors, stroke, and background.
+    - Customizable subtitle styling including position (`y` parameter), font size, colors, stroke, and background.
     - AI-generated style prompts can be used for automatic color and style combinations.
     - Subtitles are auto-centered horizontally.
+- **Image Overlays:**
+    - Superimpose PNG images (with transparency support) over videos at specific timestamps.
+    - Configurable: position (x, y), dimensions (width, height), opacity (0-1), alignment.
+    - Images appear below text overlays in the layer order.
+- **Sound Effects:**
+    - Mix additional audio clips into the main audio track at specific timestamps.
+    - Configurable volume (0.01-2.0) with proper dB conversion.
+    - Works with or without visual overlays.
 - **Asynchronous Job Management:**
     - Long-running tasks like video concatenation are handled via an asynchronous job queue.
     - Job status can be retrieved using `GET /jobs/{job_id}` with statuses like `queued`, `downloading`, `processing`, `completed`, and `failed`.
