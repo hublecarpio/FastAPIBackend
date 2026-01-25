@@ -416,7 +416,41 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
     stroke_extra = stroke_width * 2 if stroke_width else 0
     max_text_width = video_width - (margin * 2) - (padding * 2) - (border_width * 2) - stroke_extra
     
-    lines = wrap_text(text, font, max_text_width, temp_draw)
+    highlight_word_index = overlay.get('highlight_word_index')
+    highlight_color = overlay.get('highlight_color')
+    
+    if highlight_word_index is not None:
+        words = text.split()
+        lines = []
+        current_line = []
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = temp_draw.textbbox((0, 0), test_line, font=font)
+            if bbox[2] - bbox[0] <= max_text_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        if current_line:
+            lines.append(' '.join(current_line))
+        if not lines:
+            lines = [text]
+        
+        word_line_mapping = []
+        global_word_idx = 0
+        for line_idx, line in enumerate(lines):
+            words_in_line = line.split()
+            for local_idx, word in enumerate(words_in_line):
+                word_line_mapping.append({
+                    "global_idx": global_word_idx,
+                    "line_idx": line_idx,
+                    "local_idx": local_idx
+                })
+                global_word_idx += 1
+    else:
+        lines = wrap_text(text, font, max_text_width, temp_draw)
+        word_line_mapping = []
     
     line_heights = []
     line_widths = []
@@ -467,12 +501,37 @@ def create_text_clip_with_background(overlay: dict, video_width: int, video_heig
         else:
             text_x = padding + border_width + (stroke_width if stroke_width else 0)
         
-        if stroke_color and stroke_width > 0:
-            stroke_rgb = hex_to_rgb(stroke_color)
-            draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255), 
-                      stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
+        if highlight_word_index is not None and highlight_color and word_line_mapping:
+            highlight_local_idx = None
+            for mapping in word_line_mapping:
+                if mapping["global_idx"] == highlight_word_index and mapping["line_idx"] == i:
+                    highlight_local_idx = mapping["local_idx"]
+                    break
+            
+            words = line.split()
+            current_x = text_x
+            for word_idx, word in enumerate(words):
+                if word_idx == highlight_local_idx:
+                    word_color = hex_to_rgb(highlight_color)
+                else:
+                    word_color = text_rgb
+                
+                if stroke_color and stroke_width > 0:
+                    stroke_rgb = hex_to_rgb(stroke_color)
+                    draw.text((current_x, current_y), word, font=font, fill=(*word_color, 255),
+                              stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
+                else:
+                    draw.text((current_x, current_y), word, font=font, fill=(*word_color, 255))
+                
+                word_bbox = temp_draw.textbbox((0, 0), word + " ", font=font)
+                current_x += word_bbox[2] - word_bbox[0]
         else:
-            draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255))
+            if stroke_color and stroke_width > 0:
+                stroke_rgb = hex_to_rgb(stroke_color)
+                draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255), 
+                          stroke_width=stroke_width, stroke_fill=(*stroke_rgb, 255))
+            else:
+                draw.text((text_x, current_y), line, font=font, fill=(*text_rgb, 255))
         
         current_y += line_heights[i] + line_spacing
     
@@ -935,11 +994,14 @@ async def get_audio(filename: str):
 class KaraokeRequest(BaseModel):
     audio_url: HttpUrl
     script: Optional[str] = None
+    mode: str = "word"
     words_per_line: int = 5
     x: Optional[int] = None
     y: int = 900
     font_size: int = 48
     font_color: str = "#FFFFFF"
+    highlight_color: str = "#FFFFFF"
+    inactive_color: str = "#666666"
     stroke_color: Optional[str] = "#000000"
     stroke_width: int = 2
     background_color: Optional[str] = None
@@ -1052,44 +1114,98 @@ Keep it professional and readable. No background colors unless specifically requ
             except Exception as e:
                 print(f"Style generation failed, using defaults: {e}")
         
-        for i, word_data in enumerate(final_words):
-            word = word_data["word"]
-            start = word_data["start"]
+        if request.mode == "highlight":
+            lines = []
+            current_line = []
+            for word_data in final_words:
+                current_line.append(word_data)
+                if len(current_line) >= request.words_per_line:
+                    lines.append(current_line)
+                    current_line = []
+            if current_line:
+                lines.append(current_line)
             
-            if i + 1 < len(final_words):
-                end = final_words[i + 1]["start"]
-            else:
-                end = word_data["end"]
-            
-            overlay = {
-                "text": word,
-                "start": round(start, 2),
-                "end": round(end, 2),
-                "y": request.y,
-                "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
-                "font_color": style_config.get("font_color", request.font_color) if style_config else request.font_color,
-                "align": request.align
-            }
-            
-            if request.x is not None:
-                overlay["x"] = request.x
-            
-            stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
-            stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
-            
-            if stroke_color:
-                overlay["stroke_color"] = stroke_color
-                overlay["stroke_width"] = stroke_width
-            
-            if request.background_color:
-                overlay["background_color"] = request.background_color
-                overlay["background_opacity"] = request.background_opacity
-                overlay["padding"] = request.padding
-            
-            overlays.append(overlay)
+            for line_words in lines:
+                line_text_parts = [w["word"] for w in line_words]
+                
+                for i, word_data in enumerate(line_words):
+                    start = word_data["start"]
+                    
+                    if i + 1 < len(line_words):
+                        end = line_words[i + 1]["start"]
+                    else:
+                        end = word_data["end"]
+                    
+                    highlight_index = i
+                    
+                    overlay = {
+                        "text": " ".join(line_text_parts),
+                        "start": round(start, 2),
+                        "end": round(end, 2),
+                        "y": request.y,
+                        "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
+                        "font_color": request.inactive_color,
+                        "highlight_word_index": highlight_index,
+                        "highlight_color": request.highlight_color,
+                        "align": request.align
+                    }
+                    
+                    if request.x is not None:
+                        overlay["x"] = request.x
+                    
+                    stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
+                    stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
+                    
+                    if stroke_color:
+                        overlay["stroke_color"] = stroke_color
+                        overlay["stroke_width"] = stroke_width
+                    
+                    if request.background_color:
+                        overlay["background_color"] = request.background_color
+                        overlay["background_opacity"] = request.background_opacity
+                        overlay["padding"] = request.padding
+                    
+                    overlays.append(overlay)
+        else:
+            for i, word_data in enumerate(final_words):
+                word = word_data["word"]
+                start = word_data["start"]
+                
+                if i + 1 < len(final_words):
+                    end = final_words[i + 1]["start"]
+                else:
+                    end = word_data["end"]
+                
+                overlay = {
+                    "text": word,
+                    "start": round(start, 2),
+                    "end": round(end, 2),
+                    "y": request.y,
+                    "font_size": style_config.get("font_size", request.font_size) if style_config else request.font_size,
+                    "font_color": style_config.get("font_color", request.font_color) if style_config else request.font_color,
+                    "align": request.align
+                }
+                
+                if request.x is not None:
+                    overlay["x"] = request.x
+                
+                stroke_color = style_config.get("stroke_color", request.stroke_color) if style_config else request.stroke_color
+                stroke_width = style_config.get("stroke_width", request.stroke_width) if style_config else request.stroke_width
+                
+                if stroke_color:
+                    overlay["stroke_color"] = stroke_color
+                    overlay["stroke_width"] = stroke_width
+                
+                if request.background_color:
+                    overlay["background_color"] = request.background_color
+                    overlay["background_opacity"] = request.background_opacity
+                    overlay["padding"] = request.padding
+                
+                overlays.append(overlay)
         
         return JSONResponse(content={
             "message": "Karaoke subtitles generated successfully",
+            "mode": request.mode,
             "total_words": len(final_words),
             "script_provided": request.script is not None,
             "style_applied": style_config is not None,
