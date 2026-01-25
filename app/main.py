@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 import requests
 import os
@@ -84,10 +84,62 @@ class TextOverlay(BaseModel):
             raise ValueError('align must be left, center, or right')
         return v
 
+class ImageOverlay(BaseModel):
+    image_url: HttpUrl
+    start: float
+    end: float
+    x: Optional[int] = None
+    y: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    opacity: Optional[float] = 1.0
+    align: Optional[str] = "center"
+    
+    @field_validator('start', 'end')
+    @classmethod
+    def validate_times(cls, v):
+        if v < 0:
+            raise ValueError('time values must be >= 0')
+        return v
+    
+    @field_validator('opacity')
+    @classmethod
+    def validate_opacity(cls, v):
+        if v < 0 or v > 1:
+            raise ValueError('opacity must be between 0 and 1')
+        return v
+    
+    @model_validator(mode='after')
+    def validate_duration(self):
+        if self.end <= self.start:
+            raise ValueError('end must be greater than start')
+        return self
+
+class SoundEffect(BaseModel):
+    audio_url: HttpUrl
+    start: float
+    volume: Optional[float] = 1.0
+    
+    @field_validator('start')
+    @classmethod
+    def validate_start(cls, v):
+        if v < 0:
+            raise ValueError('start must be >= 0')
+        return v
+    
+    @field_validator('volume')
+    @classmethod
+    def validate_volume(cls, v):
+        if v < 0.01 or v > 2:
+            raise ValueError('volume must be between 0.01 and 2')
+        return v
+
 class ConcatVideosRequest(BaseModel):
     video_urls: List[HttpUrl]
     audio_url: Optional[HttpUrl] = None
     overlays: Optional[List[TextOverlay]] = None
+    image_overlays: Optional[List[ImageOverlay]] = None
+    sound_effects: Optional[List[SoundEffect]] = None
 
 class SplitAudioRequest(BaseModel):
     audio_url: HttpUrl
@@ -585,7 +637,110 @@ def download_audio_file(url: str, save_path: Path) -> Path:
     except requests.exceptions.RequestException as e:
         raise ValueError(f"Download failed: {str(e)}")
 
-def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_url: Optional[str] = None, overlays: Optional[List[dict]] = None):
+def create_image_overlay_clip(overlay: dict, video_width: int, video_height: int):
+    """Create an ImageClip from an image URL with positioning and timing."""
+    from moviepy.editor import ImageClip as MoviePyImageClip
+    from PIL import Image as PILImage
+    import numpy as np
+    
+    image_url = overlay['image_url']
+    start = overlay['start']
+    end = overlay['end']
+    x = overlay.get('x')
+    y = overlay.get('y', 0)
+    width = overlay.get('width')
+    height = overlay.get('height')
+    opacity = overlay.get('opacity', 1.0)
+    align = overlay.get('align', 'center')
+    
+    response = requests.get(str(image_url), headers=DOWNLOAD_HEADERS, timeout=30)
+    response.raise_for_status()
+    
+    img = PILImage.open(io.BytesIO(response.content)).convert('RGBA')
+    
+    orig_width, orig_height = img.size
+    
+    if width and height:
+        img = img.resize((width, height), PILImage.Resampling.LANCZOS)
+    elif width:
+        ratio = width / orig_width
+        new_height = int(orig_height * ratio)
+        img = img.resize((width, new_height), PILImage.Resampling.LANCZOS)
+    elif height:
+        ratio = height / orig_height
+        new_width = int(orig_width * ratio)
+        img = img.resize((new_width, height), PILImage.Resampling.LANCZOS)
+    
+    if opacity < 1.0:
+        alpha = img.split()[3]
+        alpha = alpha.point(lambda p: int(p * opacity))
+        img.putalpha(alpha)
+    
+    img_array = np.array(img)
+    clip = MoviePyImageClip(img_array, ismask=False, transparent=True)
+    
+    img_width, img_height = img.size
+    
+    if x is not None:
+        final_x = x
+    elif align == 'center':
+        final_x = (video_width - img_width) // 2
+    elif align == 'left':
+        final_x = 0
+    elif align == 'right':
+        final_x = video_width - img_width
+    else:
+        final_x = (video_width - img_width) // 2
+    
+    if y is None:
+        final_y = (video_height - img_height) // 2
+    else:
+        final_y = y
+    
+    clip = clip.set_position((final_x, final_y))
+    clip = clip.set_start(start)
+    clip = clip.set_duration(end - start)
+    
+    return clip
+
+
+def mix_sound_effects(main_audio_path: Path, sound_effects: List[dict], output_path: Path, temp_dir: Path):
+    """Mix sound effects into the main audio track using pydub."""
+    from pydub import AudioSegment
+    
+    main_audio = AudioSegment.from_file(str(main_audio_path))
+    
+    for idx, effect in enumerate(sound_effects):
+        try:
+            effect_url = str(effect['audio_url'])
+            start_ms = int(effect['start'] * 1000)
+            volume = effect.get('volume', 1.0)
+            
+            effect_path = temp_dir / f"effect_{idx}.mp3"
+            response = requests.get(effect_url, headers=DOWNLOAD_HEADERS, timeout=30)
+            response.raise_for_status()
+            
+            with open(effect_path, 'wb') as f:
+                f.write(response.content)
+            
+            effect_audio = AudioSegment.from_file(str(effect_path))
+            
+            if volume != 1.0:
+                import math
+                db_change = 20 * math.log10(volume)
+                effect_audio = effect_audio + db_change
+            
+            if start_ms < len(main_audio):
+                main_audio = main_audio.overlay(effect_audio, position=start_ms)
+            
+        except Exception as e:
+            print(f"Warning: Failed to add sound effect {idx}: {e}")
+    
+    main_audio.export(str(output_path), format="mp3")
+    return output_path
+
+
+def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_url: Optional[str] = None, overlays: Optional[List[dict]] = None, image_overlays: Optional[List[dict]] = None, sound_effects: Optional[List[dict]] = None):
     """Background task to concatenate videos with optional overlays."""
     temp_session_dir = TEMP_DIR / job_id
     temp_session_dir.mkdir(parents=True, exist_ok=True)
@@ -633,7 +788,9 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
         output_path = OUTPUT_DIR / video_filename
         
         try:
-            if overlays and len(overlays) > 0:
+            has_overlays = (overlays and len(overlays) > 0) or (image_overlays and len(image_overlays) > 0)
+            
+            if has_overlays:
                 jobs_store[job_id]["message"] = "Processing with overlays (re-encoding)..."
                 
                 video_clips = []
@@ -646,21 +803,37 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                 video_width = int(concatenated.w)
                 video_height = int(concatenated.h)
                 
-                overlay_clips = []
-                for overlay in overlays:
-                    try:
-                        overlay_clip = create_text_clip_with_background(overlay, video_width, video_height)
-                        overlay_clips.append(overlay_clip)
-                    except Exception as e:
-                        print(f"Warning: Failed to create overlay: {e}")
+                all_overlay_clips = []
                 
-                if overlay_clips:
-                    final_video = CompositeVideoClip([concatenated] + overlay_clips)
+                if image_overlays:
+                    for img_overlay in image_overlays:
+                        try:
+                            img_clip = create_image_overlay_clip(img_overlay, video_width, video_height)
+                            all_overlay_clips.append(img_clip)
+                        except Exception as e:
+                            print(f"Warning: Failed to create image overlay: {e}")
+                
+                if overlays:
+                    for overlay in overlays:
+                        try:
+                            overlay_clip = create_text_clip_with_background(overlay, video_width, video_height)
+                            all_overlay_clips.append(overlay_clip)
+                        except Exception as e:
+                            print(f"Warning: Failed to create text overlay: {e}")
+                
+                if all_overlay_clips:
+                    final_video = CompositeVideoClip([concatenated] + all_overlay_clips)
                 else:
                     final_video = concatenated
                 
-                if audio_url and audio_path:
-                    custom_audio = AudioFileClip(str(audio_path))
+                final_audio_path = audio_path
+                if audio_url and audio_path and sound_effects and len(sound_effects) > 0:
+                    jobs_store[job_id]["message"] = "Mixing sound effects..."
+                    mixed_audio_path = temp_session_dir / "mixed_audio.mp3"
+                    final_audio_path = mix_sound_effects(audio_path, sound_effects, mixed_audio_path, temp_session_dir)
+                
+                if audio_url and final_audio_path:
+                    custom_audio = AudioFileClip(str(final_audio_path))
                     final_video = final_video.set_audio(custom_audio)
                 
                 final_video.write_videofile(
@@ -677,7 +850,7 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                 for clip in video_clips:
                     clip.close()
                 final_video.close()
-                if audio_url and audio_path:
+                if audio_url and final_audio_path:
                     custom_audio.close()
             else:
                 concat_list_path = temp_session_dir / "concat_list.txt"
@@ -685,13 +858,19 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                     for video_path in downloaded_videos:
                         f.write(f"file '{video_path.absolute()}'\n")
                 
-                if audio_url and audio_path:
+                final_audio_path = audio_path
+                if audio_url and audio_path and sound_effects and len(sound_effects) > 0:
+                    jobs_store[job_id]["message"] = "Mixing sound effects..."
+                    mixed_audio_path = temp_session_dir / "mixed_audio.mp3"
+                    final_audio_path = mix_sound_effects(audio_path, sound_effects, mixed_audio_path, temp_session_dir)
+                
+                if audio_url and final_audio_path:
                     cmd = [
                         'ffmpeg', '-y',
                         '-f', 'concat',
                         '-safe', '0',
                         '-i', str(concat_list_path),
-                        '-i', str(audio_path),
+                        '-i', str(final_audio_path),
                         '-map', '0:v',
                         '-map', '1:a',
                         '-c:v', 'copy',
@@ -715,13 +894,13 @@ def process_concat_job(job_id: str, video_urls: List[str], base_url: str, audio_
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                 
                 if result.returncode != 0:
-                    if audio_url and audio_path:
+                    if audio_url and final_audio_path:
                         cmd_reencode = [
                             'ffmpeg', '-y',
                             '-f', 'concat',
                             '-safe', '0',
                             '-i', str(concat_list_path),
-                            '-i', str(audio_path),
+                            '-i', str(final_audio_path),
                             '-map', '0:v',
                             '-map', '1:a',
                             '-c:v', 'libx264',
@@ -800,6 +979,14 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     if request.overlays:
         overlays_list = [overlay.model_dump() for overlay in request.overlays]
     
+    image_overlays_list = None
+    if request.image_overlays:
+        image_overlays_list = [img_overlay.model_dump() for img_overlay in request.image_overlays]
+    
+    sound_effects_list = None
+    if request.sound_effects:
+        sound_effects_list = [effect.model_dump() for effect in request.sound_effects]
+    
     jobs_store[job_id] = {
         "job_id": job_id,
         "status": "queued",
@@ -808,6 +995,8 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
         "total_videos": len(request.video_urls),
         "has_custom_audio": audio_url_str is not None,
         "has_overlays": overlays_list is not None and len(overlays_list) > 0,
+        "has_image_overlays": image_overlays_list is not None and len(image_overlays_list) > 0,
+        "has_sound_effects": sound_effects_list is not None and len(sound_effects_list) > 0,
         "created_at": datetime.now().isoformat(),
         "video_filename": None,
         "download_url": None,
@@ -815,7 +1004,10 @@ async def concat_videos(request: ConcatVideosRequest, req: Request):
     }
     
     video_urls = [str(url) for url in request.video_urls]
-    thread = threading.Thread(target=process_concat_job, args=(job_id, video_urls, base_url, audio_url_str, overlays_list))
+    thread = threading.Thread(
+        target=process_concat_job, 
+        args=(job_id, video_urls, base_url, audio_url_str, overlays_list, image_overlays_list, sound_effects_list)
+    )
     thread.start()
     
     return JSONResponse(content={
