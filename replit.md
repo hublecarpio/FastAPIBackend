@@ -12,6 +12,11 @@ FastAPI-based REST API service that generates MP4 videos by combining images and
   - Optional: Replace all video audio with a custom audio track
   - Check status via GET /jobs/{job_id}
 - **GET /jobs/{job_id}**: Check status of async video jobs (queued, downloading, processing, completed, failed)
+- **POST /split_audio/**: Split audio into N parts cutting at natural pauses
+  - Detects silence/pauses using pydub
+  - Cuts at nearest pause to avoid mid-word cuts
+  - Returns download URLs for each segment
+- **GET /audios/{filename}**: Download generated audio segments
 - **GET /videos/{filename}**: Download generated videos
 - **GET /**: Health check endpoint returning API status and version
 - Automatic video generation with libx264 codec and AAC audio at 24 fps
@@ -180,6 +185,41 @@ Check status of an async video job.
 
 **Job statuses:** queued → downloading → processing → completed/failed
 
+### POST /split_audio/
+Split audio into N parts, cutting at natural silence/pause points to avoid mid-word cuts.
+
+**Request Body:**
+```json
+{
+  "audio_url": "https://example.com/speech.mp3",
+  "parts": 7,
+  "min_silence_len": 300,
+  "silence_thresh": -40
+}
+```
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| audio_url | Yes | - | URL of audio to split |
+| parts | Yes | - | Number of segments (2-100) |
+| min_silence_len | No | 300 | Minimum silence duration in ms |
+| silence_thresh | No | -40 | Silence threshold in dBFS |
+
+**Response:**
+```json
+{
+  "message": "Audio split successfully",
+  "split_id": "abc123",
+  "original_duration": 21.0,
+  "requested_parts": 7,
+  "actual_parts": 7,
+  "segments": [
+    {"index": 1, "start": 0.0, "end": 2.8, "duration": 2.8, "filename": "segment_abc123_1.mp3", "download_url": "https://your-domain/audios/segment_abc123_1.mp3"},
+    {"index": 2, "start": 2.8, "end": 5.9, "duration": 3.1, "filename": "segment_abc123_2.mp3", "download_url": "https://your-domain/audios/segment_abc123_2.mp3"}
+  ]
+}
+```
+
 ## Technical Details
 - **Framework**: FastAPI with Pydantic validation
 - **Video Processing**: MoviePy for video generation
@@ -198,6 +238,7 @@ Check status of an async video job.
 - Uvicorn: ASGI server
 - imageio[pyav]: Image/video I/O backend
 - numpy: Numerical processing
+- pydub: Audio processing and silence detection
 
 ### System Dependencies
 - FFmpeg: Video encoding and processing (installed via Replit)
@@ -218,3 +259,4 @@ Check status of an async video job.
 - 2026-01-25: Added optional audio_url parameter to replace video audio with custom track
 - 2026-01-25: Improved image validation using Pillow before MoviePy processing
 - 2026-01-25: Switched to FFmpeg concat demuxer for faster video concatenation
+- 2026-01-25: Added POST /split_audio/ endpoint for intelligent audio splitting at silence points
